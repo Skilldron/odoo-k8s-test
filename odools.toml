@@ -1,0 +1,7 @@
+# Configuration d'OdooLS (extension VS Code « Odoo.odoo »).
+# Les chemins relatifs sont résolus par rapport à ce fichier.
+[[config]]
+name = "default"
+odoo_path = "/opt/odoo"
+addons_paths = ["/opt/odoo/addons", "addons"]
+python_path = "/opt/venv/bin/python"

@@ -1,0 +1,48 @@
+# Environnement de développement Odoo 20.0 Community.
+# Utilisé par le dev container (.devcontainer/devcontainer.json) ;
+# peut aussi être lancé seul : `docker compose up -d`.
+services:
+  odoo:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: dev
+    image: ${COMPOSE_PROJECT_NAME:-odoo}-dev:20.0
+    # Odoo est lancé par le développeur (F5 / tâches VS Code), pas au démarrage
+    command: sleep infinity
+    volumes:
+      - .:/workspace:cached
+      - odoo-data:/var/lib/odoo
+    ports:
+      - "8069:8069"
+      - "8072:8072"
+    depends_on:
+      db:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
+  db:
+    image: postgres:${POSTGRES_VERSION:-16}
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: postgres
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:v1.31
+    ports:
+      - "8025:8025"
+
+volumes:
+  odoo-data:
+  db-data:

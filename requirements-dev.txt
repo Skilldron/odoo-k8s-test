@@ -1,0 +1,11 @@
+# Outillage développeur — installé uniquement dans la cible `dev` de l'image.
+debugpy==1.8.22
+ruff==0.17.0
+pylint-odoo==10.0.12
+pre-commit==4.7.0
+pytest-odoo==2.3.0
+coverage==7.16.2
+# 9.13+ exige psutil>=7, incompatible avec le pin psutil==5.9.8 d'Odoo
+ipython==9.12.0
+# utilisé par --dev=reload
+watchdog==6.0.0

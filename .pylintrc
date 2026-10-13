@@ -1,0 +1,16 @@
+# pylint-odoo : uniquement les checks Odoo (« odoolint ») ; le lint Python générique
+# est assuré par ruff.
+[MASTER]
+load-plugins=pylint_odoo
+score=n
+
+[ODOOLINT]
+valid-odoo-versions=20.0
+manifest-required-authors=OpenITech
+manifest-required-keys=license
+manifest-deprecated-keys=description,active
+license-allowed=AGPL-3,GPL-2,GPL-2 or any later version,GPL-3,GPL-3 or any later version,LGPL-3,OPL-1,OEEL-1
+
+[MESSAGES CONTROL]
+disable=all
+enable=odoolint

@@ -1,0 +1,71 @@
+{
+  "name": "Odoo 20.0 Community",
+  "dockerComposeFile": ["../compose.yaml"],
+  "service": "odoo",
+  "runServices": ["odoo", "db", "mailpit"],
+  "workspaceFolder": "/workspace",
+  "remoteUser": "odoo",
+  "updateRemoteUserUID": true,
+  "shutdownAction": "stopCompose",
+
+  "forwardPorts": [8069, 8072, 8025],
+  "portsAttributes": {
+    "8069": {"label": "Odoo", "onAutoForward": "notify"},
+    "8072": {"label": "Odoo longpolling", "onAutoForward": "silent"},
+    "8025": {"label": "Mailpit", "onAutoForward": "silent"}
+  },
+
+  "postCreateCommand": "git config --global --add safe.directory /workspace && npm ci --no-audit --no-fund && pre-commit install --install-hooks",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "Odoo.odoo",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+        "charliermarsh.ruff",
+        "redhat.vscode-xml",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint",
+        "EditorConfig.EditorConfig",
+        "tamasfe.even-better-toml",
+        "mtxr.sqltools",
+        "mtxr.sqltools-driver-pg"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venv/bin/python",
+        "python.analysis.extraPaths": ["/opt/odoo"],
+        "python.analysis.typeCheckingMode": "off",
+
+        "editor.formatOnSave": true,
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff",
+          "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+          }
+        },
+        "[xml]": {"editor.defaultFormatter": "esbenp.prettier-vscode"},
+        "[javascript]": {"editor.defaultFormatter": "esbenp.prettier-vscode"},
+        "[scss]": {"editor.defaultFormatter": "esbenp.prettier-vscode"},
+        "[css]": {"editor.defaultFormatter": "esbenp.prettier-vscode"},
+        "[yaml]": {"editor.defaultFormatter": "esbenp.prettier-vscode"},
+
+        "files.exclude": {"**/__pycache__": true, "**/*.pyc": true},
+
+        "sqltools.connections": [
+          {
+            "name": "Odoo DB",
+            "driver": "PostgreSQL",
+            "server": "db",
+            "port": 5432,
+            "username": "odoo",
+            "password": "odoo",
+            "database": "postgres"
+          }
+        ]
+      }
+    }
+  }
+}

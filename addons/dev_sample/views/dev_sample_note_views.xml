@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<odoo>
+    <record id="dev_sample_note_view_list" model="ir.ui.view">
+        <field name="name">dev.sample.note.view.list</field>
+        <field name="model">dev.sample.note</field>
+        <field name="arch" type="xml">
+            <list decoration-danger="is_late">
+                <field name="name" />
+                <field name="deadline" />
+                <field name="done" />
+                <field name="is_late" column_invisible="True" />
+            </list>
+        </field>
+    </record>
+
+    <record id="dev_sample_note_view_form" model="ir.ui.view">
+        <field name="name">dev.sample.note.view.form</field>
+        <field name="model">dev.sample.note</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button
+                        name="action_mark_done"
+                        type="object"
+                        string="Mark as done"
+                        class="btn-primary"
+                        invisible="done"
+                    />
+                </header>
+                <sheet>
+                    <group>
+                        <field name="name" />
+                        <field name="deadline" />
+                        <field name="done" />
+                        <field name="description" />
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="dev_sample_note_action" model="ir.actions.act_window">
+        <field name="name">Sample Notes</field>
+        <field name="res_model">dev.sample.note</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <menuitem
+        id="dev_sample_menu_root"
+        name="Dev Sample"
+        action="dev_sample_note_action"
+        sequence="999"
+    />
+</odoo>

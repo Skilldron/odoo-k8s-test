@@ -1,0 +1,9 @@
+# Aligné sur la configuration OCA. Utilisé par pre-commit et l'extension VS Code Prettier.
+plugins:
+  - "@prettier/plugin-xml"
+bracketSpacing: false
+printWidth: 88
+proseWrap: always
+semi: true
+trailingComma: "es5"
+xmlWhitespaceSensitivity: "strict"

@@ -1,0 +1,12 @@
+{
+  "name": "odoo-project-tooling",
+  "private": true,
+  "description": "Outillage JS/XML pour l'éditeur (prettier, eslint). Les mêmes versions sont utilisées par pre-commit.",
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@prettier/plugin-xml": "3.4.2",
+    "eslint": "10.12.0",
+    "globals": "17.13.0",
+    "prettier": "3.9.10"
+  }
+}

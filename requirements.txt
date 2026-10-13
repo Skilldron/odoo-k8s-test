@@ -1,0 +1,2 @@
+# Dépendances Python des addons du projet (installées dans l'image, toutes cibles).
+# Les dépendances d'Odoo lui-même proviennent de /opt/odoo/requirements.txt.

@@ -1,0 +1,2 @@
+id,name,model_id,group_id/id,operation,domain
+access_dev_sample_note_user,dev.sample.note.user,dev.sample.note,base.group_user,crud,

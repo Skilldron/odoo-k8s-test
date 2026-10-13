@@ -1,0 +1,73 @@
+{
+  // Configurations de debug Odoo (debugpy). Odoo tourne en mode threadé (workers = 0),
+  // condition nécessaire pour que les breakpoints soient fiables.
+  // `--dev=reload` n'est pas utilisé ici : le redémarrage du process détache le debugger.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Odoo : serveur",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/opt/odoo/odoo-bin",
+      "args": ["-d", "${input:database}", "--dev=xml,qweb"],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Odoo : mettre à jour un module",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/opt/odoo/odoo-bin",
+      "args": ["-d", "${input:database}", "-u", "${input:module}", "--dev=xml,qweb"],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Odoo : tests d'un module",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/opt/odoo/odoo-bin",
+      "args": [
+        "-d",
+        "${input:testDatabase}",
+        "-i",
+        "${input:module}",
+        "--test-tags",
+        "/${input:module}",
+        "--stop-after-init",
+        "--http-port",
+        "8169"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Odoo : shell",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/opt/odoo/odoo-bin",
+      "args": ["shell", "-d", "${input:database}"],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ],
+  "inputs": [
+    {
+      "id": "database",
+      "type": "promptString",
+      "description": "Base de données",
+      "default": "odoo20"
+    },
+    {
+      "id": "testDatabase",
+      "type": "promptString",
+      "description": "Base de test",
+      "default": "odoo20_test"
+    },
+    {
+      "id": "module",
+      "type": "promptString",
+      "description": "Module technique (ex. sale_custom)"
+    }
+  ]
+}

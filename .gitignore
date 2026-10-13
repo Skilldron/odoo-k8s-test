@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+
+# Environnement local
+.env
+*.log
+
+# Éditeurs / OS
+.idea/
+.DS_Store
+*.swp
