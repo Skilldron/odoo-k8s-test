@@ -2,6 +2,6 @@
 # Les chemins relatifs sont résolus par rapport à ce fichier.
 [[config]]
 name = "default"
-odoo_path = "/opt/odoo"
-addons_paths = ["/opt/odoo/addons", "addons"]
+odoo_path = "/usr/lib/python3/dist-packages"
+addons_paths = ["addons"]
 python_path = "/opt/venv/bin/python"

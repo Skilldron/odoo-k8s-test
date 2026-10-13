@@ -35,7 +35,7 @@
       ],
       "settings": {
         "python.defaultInterpreterPath": "/opt/venv/bin/python",
-        "python.analysis.extraPaths": ["/opt/odoo"],
+        "python.analysis.extraPaths": ["/usr/lib/python3/dist-packages"],
         "python.analysis.typeCheckingMode": "off",
 
         "editor.formatOnSave": true,

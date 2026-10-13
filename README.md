@@ -13,22 +13,21 @@ Prérequis : Docker, VS Code et l'extension _Dev Containers_.
 2. Lancer **Odoo : serveur** (F5) → <http://localhost:8069>, base `odoo20` par défaut.
 3. Les e-mails envoyés par Odoo sont visibles dans Mailpit : <http://localhost:8025>.
 
-Hors VS Code : `docker compose up -d` puis
-`docker compose exec odoo /opt/odoo/odoo-bin -d odoo20`.
+Hors VS Code : `docker compose up -d` puis `docker compose exec odoo odoo -d odoo20`.
 
 ## Ce que contient l'environnement
 
-| Besoin             | Outil                                                                |
-| ------------------ | -------------------------------------------------------------------- |
-| Image              | `docker/Dockerfile` (Ubuntu 24.04, Python 3.12, Odoo figé au commit) |
-| Services           | `compose.yaml` : Odoo, PostgreSQL 16, Mailpit                        |
-| LSP Odoo           | Extension `Odoo.odoo` (OdooLS), configurée par `odools.toml`         |
-| Python             | Pylance + ruff (lint, format, tri des imports à l'enregistrement)    |
-| Debugger           | debugpy — configurations dans `.vscode/launch.json`                  |
-| Lint Odoo          | pylint-odoo (`.pylintrc`), `oca-checks-odoo-module`                  |
-| XML / JS           | prettier + `@prettier/plugin-xml`, eslint (`eslint.config.mjs`)      |
-| Hooks Git          | pre-commit (`.pre-commit-config.yaml`), identique en local et en CI  |
-| Base de données UI | SQLTools (connexion « Odoo DB » préconfigurée)                       |
+| Besoin             | Outil                                                                 |
+| ------------------ | --------------------------------------------------------------------- |
+| Image              | `docker/Dockerfile`, basé sur l'image officielle `odoo:20.0` (digest) |
+| Services           | `compose.yaml` : Odoo, PostgreSQL 16, Mailpit                         |
+| LSP Odoo           | Extension `Odoo.odoo` (OdooLS), configurée par `odools.toml`          |
+| Python             | Pylance + ruff (lint, format, tri des imports à l'enregistrement)     |
+| Debugger           | debugpy — configurations dans `.vscode/launch.json`                   |
+| Lint Odoo          | pylint-odoo (`.pylintrc`), `oca-checks-odoo-module`                   |
+| XML / JS           | prettier + `@prettier/plugin-xml`, eslint (`eslint.config.mjs`)       |
+| Hooks Git          | pre-commit (`.pre-commit-config.yaml`), identique en local et en CI   |
+| Base de données UI | SQLTools (connexion « Odoo DB » préconfigurée)                        |
 
 ## Usage quotidien
 
@@ -59,7 +58,25 @@ requirements-dev.txt    outillage développeur (image dev uniquement)
 - Données de démo désactivées par défaut (`with_demo = True` dans la conf de dev).
 - Écoute par défaut sur `127.0.0.1` : la conf de dev force `http_interface = 0.0.0.0`.
 
-## Mettre à jour Odoo
+## Image Odoo
 
-Modifier `ODOO_COMMIT` dans `docker/Dockerfile`, puis _Dev Containers : Rebuild
-Container_.
+L'image part de l'image officielle `odoo:20.0`, figée par **tag daté + digest** dans
+`docker/Dockerfile` (`ARG ODOO_IMAGE`) : même base en dev et en prod, builds
+reproductibles.
+
+- Odoo est installé par paquet `.deb` : sources dans
+  `/usr/lib/python3/dist-packages/odoo` (tous les addons dans `odoo/addons`).
+- Les dépendances Python d'Odoo sont des paquets apt. Les dépendances du projet et
+  l'outillage vont dans un venv `/opt/venv` (`--system-site-packages`) ;
+  `/opt/venv/pip.conf` (contraintes) empêche pip de remplacer une version apt.
+- Lancer Odoo avec `odoo` (= `/opt/venv/bin/odoo`, qui voit le venv), pas
+  `/usr/bin/odoo` (Python système).
+
+### Mettre à jour Odoo
+
+```sh
+docker buildx imagetools inspect odoo:20.0   # digest courant du tag 20.0
+```
+
+Reporter le tag daté (`20.0-AAAAMMJJ`) et le digest dans `ARG ODOO_IMAGE`, puis _Dev
+Containers : Rebuild Container_.

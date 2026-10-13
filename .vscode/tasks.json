@@ -4,14 +4,14 @@
     {
       "label": "Odoo : lancer (auto-reload, sans debug)",
       "type": "shell",
-      "command": "/opt/odoo/odoo-bin -d ${input:database} --dev=all",
+      "command": "odoo -d ${input:database} --dev=all",
       "isBackground": true,
       "problemMatcher": []
     },
     {
       "label": "Odoo : tests d'un module",
       "type": "shell",
-      "command": "/opt/odoo/odoo-bin -d ${input:testDatabase} -i ${input:module} --test-tags /${input:module} --stop-after-init --http-port 8169",
+      "command": "odoo -d ${input:testDatabase} -i ${input:module} --test-tags /${input:module} --stop-after-init --http-port 8169",
       "group": "test",
       "problemMatcher": []
     },

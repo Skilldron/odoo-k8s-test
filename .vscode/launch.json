@@ -8,7 +8,7 @@
       "name": "Odoo : serveur",
       "type": "debugpy",
       "request": "launch",
-      "program": "/opt/odoo/odoo-bin",
+      "program": "/opt/venv/bin/odoo",
       "args": ["-d", "${input:database}", "--dev=xml,qweb"],
       "console": "integratedTerminal",
       "justMyCode": false
@@ -17,7 +17,7 @@
       "name": "Odoo : mettre à jour un module",
       "type": "debugpy",
       "request": "launch",
-      "program": "/opt/odoo/odoo-bin",
+      "program": "/opt/venv/bin/odoo",
       "args": ["-d", "${input:database}", "-u", "${input:module}", "--dev=xml,qweb"],
       "console": "integratedTerminal",
       "justMyCode": false
@@ -26,7 +26,7 @@
       "name": "Odoo : tests d'un module",
       "type": "debugpy",
       "request": "launch",
-      "program": "/opt/odoo/odoo-bin",
+      "program": "/opt/venv/bin/odoo",
       "args": [
         "-d",
         "${input:testDatabase}",
@@ -45,7 +45,7 @@
       "name": "Odoo : shell",
       "type": "debugpy",
       "request": "launch",
-      "program": "/opt/odoo/odoo-bin",
+      "program": "/opt/venv/bin/odoo",
       "args": ["shell", "-d", "${input:database}"],
       "console": "integratedTerminal",
       "justMyCode": false

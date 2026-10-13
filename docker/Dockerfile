@@ -1,83 +1,54 @@
 # syntax=docker/dockerfile:1
 #
-# Odoo 20.0 Community — image multi-stage
-#   builder : compile le virtualenv Python (deps Odoo + deps projet)
-#   base    : runtime minimal (sources Odoo + venv), socle commun dev / prod
-#   dev     : outillage développeur (debugpy, ruff, pylint-odoo, pre-commit, node)
-#   (prod   : ajouté à l'étape CD)
+# Odoo 20.0 Community — basée sur l'image officielle Odoo, figée par digest
+#   base : image officielle + venv projet (deps Python des addons), user odoo uid 1000
+#   dev  : outillage développeur (debugpy, ruff, pylint-odoo, pre-commit, node)
+#   (prod: ajouté à l'étape CD)
+#
+# Mettre à jour Odoo : changer le tag daté ET le digest (docker buildx imagetools inspect odoo:20.0)
 
-ARG UBUNTU_VERSION=24.04
-
-########################################################################
-FROM ubuntu:${UBUNTU_VERSION} AS builder
-
-# Commit Odoo 20.0 figé pour des builds reproductibles. Mettre à jour volontairement.
-ARG ODOO_COMMIT=d1597b052b0eff61faf69a5b7e70d18130a9eaa0
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates git \
-        python3 python3-dev python3-venv \
-        libpq-dev libldap2-dev libsasl2-dev libxml2-dev libxslt1-dev \
-        libjpeg-dev zlib1g-dev libffi-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Sources Odoo Community, embarquées dans l'image
-RUN git init -q /opt/odoo \
-    && git -C /opt/odoo remote add origin https://github.com/odoo/odoo.git \
-    && git -C /opt/odoo fetch -q --depth 1 origin "${ODOO_COMMIT}" \
-    && git -C /opt/odoo checkout -q FETCH_HEAD \
-    && rm -rf /opt/odoo/.git
-
-RUN python3 -m venv /opt/venv
-ENV PATH=/opt/venv/bin:$PATH
-RUN pip install --no-cache-dir --upgrade pip wheel \
-    && pip install --no-cache-dir -r /opt/odoo/requirements.txt \
-    # rend `import odoo` disponible (pylint, pylance, pytest, shell)
-    && python -c "import site; open(site.getsitepackages()[0] + '/odoo.pth', 'w').write('/opt/odoo\n')"
-
-# Dépendances Python spécifiques aux addons du projet
-COPY requirements.txt /tmp/project-requirements.txt
-RUN pip install --no-cache-dir -r /tmp/project-requirements.txt -c /opt/odoo/requirements.txt
+ARG ODOO_IMAGE=odoo:20.0-20260926@sha256:cdd83e8359b3e8c357895d476396c05021fed9975bf420f353bab25fcaed1533
 
 ########################################################################
-FROM ubuntu:${UBUNTU_VERSION} AS base
+FROM ${ODOO_IMAGE} AS base
 
-ARG WKHTMLTOX_VERSION=0.12.6.1-3
-ARG TARGETARCH
-
+USER root
 ENV DEBIAN_FRONTEND=noninteractive \
-    LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
-    PATH=/opt/venv/bin:$PATH \
-    ODOO_RC=/etc/odoo/odoo.conf
+    PATH=/opt/venv/bin:$PATH
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl \
-        python3 python3-venv \
-        libpq5 libldap2 libsasl2-2 libxml2 libxslt1.1 libjpeg-turbo8 libmagic1 \
-        fonts-noto-cjk fonts-dejavu-core fonts-inconsolata fonts-font-awesome \
-        fonts-roboto-unhinted gsfonts xfonts-75dpi xfonts-base \
-        postgresql-client nodejs npm \
-    && curl -fsSL -o /tmp/wkhtmltox.deb \
-        "https://github.com/wkhtmltopdf/packaging/releases/download/${WKHTMLTOX_VERSION}/wkhtmltox_${WKHTMLTOX_VERSION}.jammy_${TARGETARCH}.deb" \
-    && apt-get install -y --no-install-recommends /tmp/wkhtmltox.deb \
-    && npm install -g rtlcss \
-    && rm -rf /tmp/wkhtmltox.deb /var/lib/apt/lists/* /root/.npm
-
-# L'image ubuntu fournit un user `ubuntu` (uid 1000) : on le remplace par `odoo`
+# - uid/gid 1000 (au lieu de 100/101) : droits cohérents avec les bind mounts sur Linux
+# - home dans /home/odoo : l'image officielle utilise /var/lib/odoo (volume de données)
 RUN userdel -r ubuntu 2>/dev/null || true \
-    && useradd --create-home --uid 1000 --shell /bin/bash odoo \
-    && mkdir -p /etc/odoo /var/lib/odoo /mnt/extra-addons \
-    && chown -R odoo:odoo /etc/odoo /var/lib/odoo /mnt/extra-addons
+    && groupmod -g 1000 odoo \
+    && mkdir -p /home/odoo \
+    && usermod -u 1000 -g 1000 -d /home/odoo -s /bin/bash odoo \
+    && chown -R odoo:odoo /home/odoo /etc/odoo /var/lib/odoo /mnt/extra-addons
 
-COPY --from=builder /opt/odoo /opt/odoo
-COPY --from=builder /opt/venv /opt/venv
+# Odoo et ses dépendances sont des paquets apt (PEP 668 : pip bloqué sur le Python
+# système) ; les dépendances du projet vont dans un venv qui voit les paquets système.
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv --system-site-packages /opt/venv \
+    && /usr/bin/python3 -m pip freeze > /opt/venv/constraints.txt \
+    # pip du venv (seulement lui : pas les environnements pre-commit) respecte toujours
+    # les versions apt fournies par l'image Odoo
+    && printf '[install]\nconstraint = /opt/venv/constraints.txt\n' > /opt/venv/pip.conf \
+    # /usr/bin/odoo utilise le Python système (sans le venv) : lanceur équivalent dans
+    # le venv, prioritaire dans le PATH (aussi pour l'entrypoint officiel)
+    && printf '#!/opt/venv/bin/python\nimport odoo.cli\n\nif __name__ == "__main__":\n    odoo.cli.main()\n' \
+        > /opt/venv/bin/odoo \
+    && chmod 755 /opt/venv/bin/odoo
 
-EXPOSE 8069 8072
+COPY requirements.txt /tmp/project-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/project-requirements.txt
+
+USER odoo
 
 ########################################################################
 FROM base AS dev
+
+USER root
 
 # Node LTS récent pour l'outillage (eslint 10 exige Node >= 20.19)
 ARG NODE_VERSION=22.23.3
@@ -85,7 +56,7 @@ ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git openssh-client sudo less vim make jq xz-utils \
-        build-essential python3-dev libpq-dev \
+        build-essential python3-dev \
     && rm -rf /var/lib/apt/lists/* \
     && echo "odoo ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/odoo \
     && NODE_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x64) \
@@ -93,12 +64,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         | tar -xJ -C /usr/local --strip-components=1 --exclude='*.md' --exclude=LICENSE
 
 COPY requirements-dev.txt /tmp/requirements-dev.txt
-# Les versions figées par Odoo servent de contraintes : l'outillage ne doit pas les modifier
-RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt -c /opt/odoo/requirements.txt \
+RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt \
     && chown -R odoo:odoo /opt/venv
 
-COPY docker/odoo.dev.conf /etc/odoo/odoo.conf
-RUN chown odoo:odoo /etc/odoo/odoo.conf
+COPY --chown=odoo:odoo docker/odoo.dev.conf /etc/odoo/odoo.conf
 
 USER odoo
 WORKDIR /workspace
