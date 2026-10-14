@@ -4,7 +4,7 @@ import globals from "globals";
 
 export default [
     {
-        ignores: ["node_modules/**", "**/static/lib/**"],
+        ignores: ["node_modules/**", "vendor/**", "**/static/lib/**"],
     },
     js.configs.recommended,
     {

@@ -3,6 +3,7 @@
 exclude: |
   (?x)
   ^node_modules/|
+  ^vendor/|
   /static/lib/|
   /static/description/index\.html$|
   \.svg$

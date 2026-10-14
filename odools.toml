@@ -1,7 +1,8 @@
 # Configuration d'OdooLS (extension VS Code « Odoo.odoo »).
 # Les chemins relatifs sont résolus par rapport à ce fichier.
+# /opt/venv/odoo-addons : modules OCA installés par pip (requirements.txt).
 [[config]]
 name = "default"
 odoo_path = "/usr/lib/python3/dist-packages"
-addons_paths = ["addons"]
+addons_paths = ["addons", "vendor", "/opt/venv/odoo-addons"]
 python_path = "/opt/venv/bin/python"

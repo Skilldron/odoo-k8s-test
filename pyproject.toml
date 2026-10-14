@@ -3,6 +3,7 @@
 target-version = "py312"
 line-length = 88
 fix = true
+extend-exclude = ["vendor"]
 
 [tool.ruff.lint]
 extend-select = [
