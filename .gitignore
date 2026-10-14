@@ -14,8 +14,12 @@ node_modules/
 # Environnement local
 .env
 *.log
+*.session.sql
 
 # Éditeurs / OS
 .idea/
 .DS_Store
 *.swp
+
+# IA
+.claude/
