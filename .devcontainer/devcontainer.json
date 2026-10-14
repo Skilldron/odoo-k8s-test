@@ -34,6 +34,7 @@
         "mtxr.sqltools-driver-pg"
       ],
       "settings": {
+        "Odoo.selectedProfile": "Odoo 20",
         "python.defaultInterpreterPath": "/opt/venv/bin/python",
         "python.analysis.extraPaths": ["/usr/lib/python3/dist-packages"],
         "python.analysis.typeCheckingMode": "off",

@@ -1,21 +1,19 @@
-# Dépendances installées dans l'image (toutes cibles : dev, CI, prod), dans /opt/venv.
-# Les dépendances d'Odoo sont les paquets apt de l'image officielle (protégés par /opt/venv/pip.conf) :
-# une version incompatible fait échouer le build au lieu de remplacer le paquet apt.
-# Après modification : Dev Containers > Rebuild Container.
+# Python deps are installed in /opt/venv.
+# Official odoo, OCA packages, python dependencies
 
-# --- Dépendances Python des addons du projet (external_dependencies) -----------------
-# Nom du paquet pip (pas le nom d'import du manifest), version figée.
-# exemple : phonenumbers==8.13.55
+# Dev Containers > Rebuild Container after each modification
 
-# --- Modules OCA ----------------------------------------------------------------------
-# Une ligne par module, version toujours figée. Odoo les trouve sans toucher addons_path.
+# ------------ External dependencies ------------
+# E.g.: phonenumbers==8.13.55
+
+# ------------ OCA modules ------------
+# OCA modules are in odoo.addons namespace and automatically found.
 #
-# Publié sur PyPI (cas normal) :
+# PyPI published (usual case):
 #   odoo-addon-web_environment_ribbon==20.0.1.0.0.3
 #
-# Pas encore publié pour 20.0 : depuis git, figé par sha de commit (jamais une branche).
-# Les dépendances OCA du module non publiées sur PyPI doivent aussi être listées ici.
-#   odoo-addon-web_environment_ribbon @ git+https://github.com/OCA/web@<sha>#subdirectory=web_environment_ribbon
+# Not published case: NEVER USE THIS UNLESS NECESSARY
+# Get the module from a specific commit sha (never a branch).
+# Its OCA dependencies not published on PyPI must be listed here too.
 #
-# PR de migration pas encore fusionnée : sha de la PR, ou mieux un fork de l'organisation.
-#   odoo-addon-date_range @ git+https://github.com/<org>/server-ux@<sha>#subdirectory=date_range
+#   odoo-addon-web_environment_ribbon @ git+https://github.com/OCA/web@<commit_sha>#subdirectory=web_environment_ribbon
