@@ -1,2 +1,21 @@
-# Dépendances Python des addons du projet (installées dans l'image, toutes cibles).
-# Les dépendances d'Odoo sont les paquets apt de l'image officielle (protégés par /opt/venv/pip.conf).
+# Dépendances installées dans l'image (toutes cibles : dev, CI, prod), dans /opt/venv.
+# Les dépendances d'Odoo sont les paquets apt de l'image officielle (protégés par /opt/venv/pip.conf) :
+# une version incompatible fait échouer le build au lieu de remplacer le paquet apt.
+# Après modification : Dev Containers > Rebuild Container.
+
+# --- Dépendances Python des addons du projet (external_dependencies) -----------------
+# Nom du paquet pip (pas le nom d'import du manifest), version figée.
+# exemple : phonenumbers==8.13.55
+
+# --- Modules OCA ----------------------------------------------------------------------
+# Une ligne par module, version toujours figée. Odoo les trouve sans toucher addons_path.
+#
+# Publié sur PyPI (cas normal) :
+#   odoo-addon-web_environment_ribbon==20.0.1.0.0.3
+#
+# Pas encore publié pour 20.0 : depuis git, figé par sha de commit (jamais une branche).
+# Les dépendances OCA du module non publiées sur PyPI doivent aussi être listées ici.
+#   odoo-addon-web_environment_ribbon @ git+https://github.com/OCA/web@<sha>#subdirectory=web_environment_ribbon
+#
+# PR de migration pas encore fusionnée : sha de la PR, ou mieux un fork de l'organisation.
+#   odoo-addon-date_range @ git+https://github.com/<org>/server-ux@<sha>#subdirectory=date_range

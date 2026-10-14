@@ -44,10 +44,55 @@ Hors VS Code : `docker compose up -d` puis `docker compose exec odoo odoo -d odo
 .devcontainer/   configuration du dev container
 .vscode/         debug (launch.json) et tâches
 addons/          addons du projet (dev_sample = module d'exemple, supprimable)
+vendor/          modules achetés (Odoo Apps Store), tels quels
 docker/          Dockerfile multi-stage et odoo.conf de dev
-requirements.txt        dépendances Python des addons
+requirements.txt        dépendances Python des addons et modules OCA
 requirements-dev.txt    outillage développeur (image dev uniquement)
 ```
+
+## Modules tiers
+
+| Origine         | Où                                  | Lint / tests CI |
+| --------------- | ----------------------------------- | --------------- |
+| Projet          | `addons/`                           | oui             |
+| Odoo Apps Store | `vendor/` (voir `vendor/README.md`) | non             |
+| OCA             | `requirements.txt` (pip)            | non             |
+
+Ordre de recherche d'Odoo : `addons` → `vendor` → modules installés par pip → cœur.
+
+### Modules OCA (pip)
+
+Les modules OCA sont des paquets pip `odoo-addon-<module>`, installés dans `/opt/venv`
+au build de l'image : même mécanisme en dev, en CI et en prod, sans `.git` dans l'image.
+Odoo les trouve sans modifier `addons_path` (namespace `odoo.addons`) ; OdooLS via
+`/opt/venv/odoo-addons` (`odools.toml`). Les dépendances OCA et Python du module sont
+résolues par pip, contraintes par les versions apt de l'image.
+
+1. Ajouter la ligne dans `requirements.txt`, **version figée** :
+   - publié sur PyPI : `odoo-addon-<module>==20.0.x.y.z` ;
+   - pas encore publié pour 20.0 :
+     `odoo-addon-<module> @ git+https://github.com/OCA/<repo>@<sha>#subdirectory=<module>`
+     (un sha de commit, pas une branche). Les dépendances OCA non publiées doivent aussi
+     être listées.
+2. Ajouter le module dans `depends` du manifest de votre module.
+3. _Dev Containers : Rebuild Container_, puis installer le module (`-i <module>`).
+
+Quand le module paraît sur PyPI, remplacer la ligne `git+…` par `==version`.
+
+**Corriger ou déboguer un module OCA** : le code est dans le venv
+(`/opt/venv/odoo-addons/<module>`), les breakpoints y fonctionnent. Pour le modifier,
+cloner le dépôt dans `third-party/` (ignoré par git) et l'installer en éditable :
+
+```sh
+git clone -b 20.0 https://github.com/OCA/<repo> third-party/<repo>
+pip install -e third-party/<repo>/<module>
+```
+
+Odoo utilise alors la copie clonée. Pour qu'OdooLS la voie aussi, ajouter
+`"third-party/<repo>"` à `addons_paths` dans `odools.toml` (sans le committer).
+L'installation éditable dure jusqu'au prochain rebuild. Proposer le correctif en PR à
+l'OCA, puis figer `requirements.txt` sur le sha de la PR ou d'un fork de l'organisation
+(un sha de PR non fusionnée peut disparaître).
 
 ## Spécificités Odoo 20.0
 
