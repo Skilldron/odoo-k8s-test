@@ -62,7 +62,7 @@
             "port": 5432,
             "username": "odoo",
             "password": "odoo",
-            "database": "postgres"
+            "database": "odoo20"
           }
         ]
       }
