@@ -23,13 +23,14 @@ services:
         condition: service_started
 
   db:
-    image: postgres:${POSTGRES_VERSION:-16}
+    image: postgres:${POSTGRES_VERSION:-18}
     environment:
       POSTGRES_USER: odoo
       POSTGRES_PASSWORD: odoo
       POSTGRES_DB: postgres
     volumes:
-      - db-data:/var/lib/postgresql/data
+      # postgres:18+ keeps its data in /var/lib/postgresql/<major>/docker
+      - pg-data:/var/lib/postgresql
     ports:
       - "5432:5432"
     healthcheck:
@@ -45,4 +46,4 @@ services:
 
 volumes:
   odoo-data:
-  db-data:
+  pg-data:

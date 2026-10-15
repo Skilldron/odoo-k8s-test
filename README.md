@@ -20,7 +20,7 @@ Hors VS Code : `docker compose up -d` puis `docker compose exec odoo odoo -d odo
 | Besoin             | Outil                                                                 |
 | ------------------ | --------------------------------------------------------------------- |
 | Image              | `docker/Dockerfile`, basé sur l'image officielle `odoo:20.0` (digest) |
-| Services           | `compose.yaml` : Odoo, PostgreSQL 16, Mailpit                         |
+| Services           | `compose.yaml` : Odoo, PostgreSQL 18, Mailpit                         |
 | LSP Odoo           | Extension `Odoo.odoo` (OdooLS), configurée par `odools.toml`          |
 | Python             | Pylance + ruff (lint, format, tri des imports à l'enregistrement)     |
 | Debugger           | debugpy — configurations dans `.vscode/launch.json`                   |
@@ -149,3 +149,29 @@ docker buildx imagetools inspect odoo:20.0   # digest courant du tag 20.0
 Reporter le tag daté (`20.0-AAAAMMJJ`) et le digest dans `ARG ODOO_IMAGE`, puis _Dev
 Containers : Rebuild Container_. Sur GitHub, le workflow `odoo-image-bump.yml` ouvre
 cette PR chaque semaine (`ci/odoo-image-latest.sh` fait la même vérification en local).
+
+## PostgreSQL
+
+Le modèle utilise PostgreSQL 18 (Odoo 20 demande 16 au minimum), en dev (`compose.yaml`)
+comme en CI (`ci/lib.sh`, variable `POSTGRES_IMAGE`). Les clients PostgreSQL de l'image
+Odoo (`pg_dump`, `pg_restore`) sont aussi en 18.
+
+Depuis la 18, l'image `postgres` range ses données dans
+`/var/lib/postgresql/<version>/docker` : le volume `pg-data` est monté sur
+`/var/lib/postgresql`. Ce montage suppose `POSTGRES_VERSION` ≥ 18.
+
+**Reprendre une base de dev en PostgreSQL 16** (ancien volume `<projet>_db-data`, que le
+passage à 18 ne modifie pas) : le filestore (`odoo-data`) ne change pas, seule la base
+est à transférer.
+
+```sh
+docker volume ls | grep db-data                       # nom exact de l'ancien volume
+docker run -d --name pg16 -e POSTGRES_PASSWORD=odoo \
+  -v <projet>_db-data:/var/lib/postgresql/data postgres:16
+docker exec pg16 pg_dumpall -U odoo > dump.sql
+docker rm -f pg16
+docker compose up -d db
+docker compose exec -T db psql -U odoo -d postgres < dump.sql
+```
+
+Une fois la base vérifiée : `docker volume rm <projet>_db-data` et supprimer `dump.sql`.

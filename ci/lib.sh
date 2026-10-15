@@ -2,7 +2,7 @@
 # Helpers shared by the ci/ scripts (sourced). Each run gets its own Docker network and
 # a throwaway PostgreSQL, removed on exit: identical on a laptop and on GitHub Actions.
 
-POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16}"
+POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:18}"
 CI_RUN_ID="ci-$$-${RANDOM}"
 CI_NETWORK="$CI_RUN_ID"
 CI_DB_HOST="$CI_RUN_ID-db"
