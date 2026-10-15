@@ -1,5 +1,19 @@
 # Plan v2 — image de base en cache, paquets GHCR séparés, jobs groupés, promotion rc → prod
 
+> **Implémenté.** Écarts lors de la mise en œuvre :
+>
+> - le remplacement de l'étape `base` par `--build-context` fonctionne : le repli
+>   `ARG BASE_IMAGE` n'a pas été nécessaire ;
+> - copies de tags avec `imagetools create --prefer-index=false` : sans cette option,
+>   copier une image vers un autre paquet l'emballait dans un index et changeait le
+>   digest ;
+> - nettoyage par `ci/ghcr-prune.sh` (API GitHub) au lieu de
+>   `actions/delete-package-versions`, dont le filtre porte sur le nom de version (le
+>   digest) et non sur les tags ; les previews `pr-<n>` sont protégées de la règle
+>   `keep` et supprimées seulement à la fermeture de leur PR.
+>
+> Documentation finale : `docs/ci.md`, `docs/gitflow.md`.
+
 Fait suite à [ci-github-actions.md](ci-github-actions.md) (implémenté sur
 `worktree-ci`). Décisions prises avec l'utilisateur :
 
@@ -106,7 +120,7 @@ Permissions : `packages: write` seulement pour `base`, `build`, `publish`, `prom
 | `ci/image-build.sh`                                                                           | réécrit   | `prod` + `test` sur `base:<clé>` ; `--push` (CI) ou `--load` (local, fork) |
 | `ci/image-tag.sh SRC TAG…`                                                                    | nouveau   | ajoute des tags (éventuellement dans un autre paquet) au digest de SRC     |
 | `ci/image-promote.sh X.Y.Z`                                                                   | nouveau   | dernière rc → `X.Y.Z` avec contrôle du label `tree`                        |
-| `ci/registry-tags.sh IMAGE`                                                                   | nouveau   | liste les tags via l'API OCI (GHCR avec jeton, ou registre local)          |
+| `ci/registry-tags.py IMAGE`                                                                   | nouveau   | liste les tags via l'API OCI (GHCR avec jeton, ou registre local)          |
 | `ci/image-publish.sh`                                                                         | supprimé  | remplacé par `image-tag.sh` / `image-promote.sh`                           |
 | `ci/run-tests.sh`, `ci/smoke.sh`, `ci/lib.sh`, `ci/list-addons.sh`, `ci/odoo-image-latest.sh` | inchangés |                                                                            |
 

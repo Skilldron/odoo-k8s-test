@@ -1,47 +1,55 @@
 #!/usr/bin/env bash
-# Builds the prod and test images of the current git tree, unless the registry already
-# holds the prod image of this tree (tag tree-<hash>). That image was built and tested by
-# an earlier run on the same content (e.g. release/x.y.z merged into main with --no-ff)
-# and is reused as is: one image per version, never rebuilt.
+# Builds the prod and test images. By default on top of the published base image
+# (<IMAGE>/base:<key>, see ci/base-ensure.sh): the "base" stage is replaced by that image,
+# so only the project modules are built. BASE=local builds everything from the official
+# image instead (pull requests from forks, which cannot use the registry).
 #
-# Env:     IMAGE (required, e.g. ghcr.io/org/repo), VERSION (label, default: commit),
-#          CACHE_FROM / CACHE_TO (optional buildx cache, e.g. type=gha)
-# Outputs: tree=<hash>, reused=true|false (stdout and $GITHUB_OUTPUT)
+# Env:     IMAGE (required, release package, e.g. ghcr.io/org/repo)
+#          TAG (required): images <IMAGE>/builds:<TAG> (prod) and <TAG>-test
+#          PUSH=true: push to the registry; otherwise (default) load into local Docker
+#          BASE: base image (default <IMAGE>/base:<key>), "local" = build it here
+#          VERSION: image label (default: commit)
+#          CACHE_FROM / CACHE_TO: buildx cache, used with BASE=local
+# Outputs: prod=<ref>, test=<ref> (stdout and $GITHUB_OUTPUT)
 # Usage:   ci/image-build.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${IMAGE:?IMAGE is required, e.g. ghcr.io/org/repo}"
-tree="$(git rev-parse 'HEAD^{tree}')"
+: "${TAG:?TAG is required, e.g. run-123-1}"
+base="${BASE:-$IMAGE/base:$(ci/base-key.sh)}"
 revision="$(git rev-parse HEAD)"
-ref="$IMAGE:tree-$tree"
+tree="$(git rev-parse 'HEAD^{tree}')"
+prod="$IMAGE/builds:$TAG"
+test="$IMAGE/builds:$TAG-test"
 
 if [ -n "$(git status --porcelain)" ]; then
     echo "warning: uncommitted changes are built but not part of tree $tree" >&2
 fi
 
-if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
-    reused=true
-    echo "Reusing $ref (already built and tested)."
+args=(-f docker/Dockerfile --provenance=false --sbom=false
+    --build-arg VERSION="${VERSION:-$revision}" --build-arg REVISION="$revision"
+    --build-arg TREE="$tree")
+if [ "$base" = local ]; then
+    [ -n "${CACHE_FROM:-}" ] && args+=(--cache-from "$CACHE_FROM")
+    [ -n "${CACHE_TO:-}" ] && args+=(--cache-to "$CACHE_TO")
 else
-    reused=false
-    cache_args=()
-    [ -n "${CACHE_FROM:-}" ] && cache_args+=(--cache-from "$CACHE_FROM")
-    [ -n "${CACHE_TO:-}" ] && cache_args+=(--cache-to "$CACHE_TO")
-    for target in prod test; do
-        tag="$ref"
-        [ "$target" = test ] && tag="$ref-test"
-        docker buildx build --load --target "$target" \
-            --build-arg VERSION="${VERSION:-$revision}" --build-arg REVISION="$revision" \
-            ${cache_args[@]+"${cache_args[@]}"} -f docker/Dockerfile -t "$tag" .
-    done
+    args+=(--build-context "base=docker-image://$base")
+fi
+if [ "${PUSH:-false}" = true ]; then
+    args+=(--push)
+else
+    args+=(--load)
 fi
 
-echo "tree=$tree"
-echo "reused=$reused"
+docker buildx build "${args[@]}" --target prod -t "$prod" .
+docker buildx build "${args[@]}" --target test -t "$test" .
+
+echo "prod=$prod"
+echo "test=$test"
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
-        echo "tree=$tree"
-        echo "reused=$reused"
+        echo "prod=$prod"
+        echo "test=$test"
     } >>"$GITHUB_OUTPUT"
 fi

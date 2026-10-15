@@ -56,10 +56,14 @@ requirements-dev.txt    outillage développeur (image dev uniquement)
 ## CI et image de prod
 
 À chaque PR et push, GitHub Actions lance pre-commit, construit l'**image de prod**
-(étape `prod` du Dockerfile), la teste (tests des modules de `addons/`, smoke test
-durci) et la publie sur GHCR. Une seule image par version : construite une fois, puis
-seulement retaguée jusqu'à la prod (tag git `vX.Y.Z`). La configuration propre à chaque
-environnement passe par des variables d'environnement au démarrage du conteneur.
+(étape `prod` du Dockerfile) sur une image de base publiée (`base:<clé>` : Odoo +
+modules OCA, reconstruite seulement quand le Dockerfile ou `requirements.txt` change),
+la teste (tests des modules de `addons/`, smoke test durci) et la publie sur GHCR : les
+builds (previews de PR, `develop`…) dans un paquet jetable, les release candidates et
+les versions dans le paquet de release. La seule promotion est celle de la dernière
+`X.Y.Z-rc.N`, validée en recette, en `X.Y.Z` (même image) au tag `vX.Y.Z`. La
+configuration propre à chaque environnement passe par des variables d'environnement au
+démarrage du conteneur.
 
 Le déploiement n'est pas inclus dans cette branche : voir les branches
 `20.0-docker-deployment` / `20.0-k8s-deployment`, ou le faire soi-même.

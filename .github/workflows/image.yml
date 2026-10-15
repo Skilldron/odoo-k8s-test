@@ -1,0 +1,214 @@
+# Image group (called by ci.yml): plan -> base -> build -> tests + smoke -> publish.
+# The image goes from job to job through the disposable builds package (tag run-<id>);
+# readable tags (pr-<n>, develop, x.y.z-rc.N...) are only set after tests and smoke test.
+# Pull requests from forks cannot push: the "local" job builds and tests without publishing.
+name: Image
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.plan.outputs.image }}
+      publish: ${{ steps.plan.outputs.publish }}
+      run_tag: ${{ steps.plan.outputs.run_tag }}
+      version: ${{ steps.plan.outputs.version }}
+      refs: ${{ steps.plan.outputs.refs }}
+    steps:
+      - name: Image references for this event
+        id: plan
+        env:
+          REPOSITORY: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          FORK:
+            ${{ github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository }}
+          PR_NUMBER: ${{ github.event.number }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_NUMBER: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
+        run: |
+          image="ghcr.io/${REPOSITORY,,}"
+          version="${SHA::7}"
+          case "$EVENT:$REF_NAME" in
+              pull_request:*)
+                  refs="$image/builds:pr-$PR_NUMBER" ;;
+              *:release/* | *:hotfix/*)
+                  v="${REF_NAME#*/}"
+                  if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                      echo "::error::$REF_NAME: expected release/X.Y.Z or hotfix/X.Y.Z (SemVer)"
+                      exit 1
+                  fi
+                  version="$v-rc.$RUN_NUMBER"
+                  refs="$image:$version" ;;
+              *:develop | *:main | *:[0-9]*.0)
+                  refs="$image/builds:$REF_NAME $image/builds:sha-${SHA::7}" ;;
+              *)
+                  refs="$image/builds:sha-${SHA::7}" ;;
+          esac
+          publish=true
+          [ "$FORK" = true ] && publish=false
+          {
+              echo "image=$image"
+              echo "publish=$publish"
+              echo "run_tag=run-$RUN_ID-$RUN_ATTEMPT"
+              echo "version=$version"
+              echo "refs=$refs"
+          } >>"$GITHUB_OUTPUT"
+          echo "Version \`$version\`, publication : \`$refs\` (publish=$publish)" >>"$GITHUB_STEP_SUMMARY"
+
+  base:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      base: ${{ steps.base.outputs.base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Base image (built only when the Dockerfile or requirements.txt changed)
+        id: base
+        env:
+          IMAGE: ${{ needs.plan.outputs.image }}
+          CACHE_FROM: type=gha,scope=base
+          CACHE_TO: type=gha,scope=base,mode=max
+        run: ci/base-ensure.sh
+
+  build:
+    needs: [plan, base]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      prod: ${{ steps.build.outputs.prod }}
+      test: ${{ steps.build.outputs.test }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Project modules on top of the base image
+        id: build
+        env:
+          IMAGE: ${{ needs.plan.outputs.image }}
+          BASE: ${{ needs.base.outputs.base }}
+          TAG: ${{ needs.plan.outputs.run_tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PUSH: "true"
+        run: ci/image-build.sh
+
+  tests:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tests of the project addons
+        env:
+          TEST_IMAGE: ${{ needs.build.outputs.test }}
+        run: ci/run-tests.sh "$TEST_IMAGE"
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Hardened smoke test of the prod image
+        env:
+          PROD_IMAGE: ${{ needs.build.outputs.prod }}
+        run: ci/smoke.sh "$PROD_IMAGE"
+
+  publish:
+    needs: [plan, build, tests, smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tags (same digest, no rebuild)
+        env:
+          PROD_IMAGE: ${{ needs.build.outputs.prod }}
+          TARGETS: ${{ needs.plan.outputs.refs }}
+        run: |
+          read -ra destinations <<<"$TARGETS"
+          ci/image-tag.sh "$PROD_IMAGE" "${destinations[@]}"
+
+  local:
+    # Pull request from a fork: no write token, so no registry; build everything here
+    needs: plan
+    if: needs.plan.outputs.publish != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build, tests and smoke test without publishing
+        env:
+          IMAGE: ${{ needs.plan.outputs.image }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          BASE: local
+          TAG: local
+          CACHE_FROM: type=gha,scope=base
+        run: |
+          ci/image-build.sh
+          ci/run-tests.sh "$IMAGE/builds:local-test"
+          ci/smoke.sh "$IMAGE/builds:local"

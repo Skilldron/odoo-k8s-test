@@ -84,15 +84,19 @@ USER odoo
 WORKDIR /workspace
 
 ########################################################################
-# prod: the single image of a version, promoted unchanged from review to production.
+# prod: the deployed image; the release candidate validated in recette is promoted
+# unchanged to production. In CI the "base" stage is the published base:<key> image.
 # Environment specific values come at runtime (env variables, see docs/ci.md).
 FROM base AS prod
 
 ARG VERSION=dev
 ARG REVISION=unknown
+# git tree hash of the sources: checked when a release candidate is promoted (ci/image-promote.sh)
+ARG TREE=unknown
 LABEL org.opencontainers.image.title="odoo" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
+      odoo.template.tree="${TREE}" \
       odoo.version="20.0"
 
 COPY --chown=odoo:odoo addons /opt/odoo/addons

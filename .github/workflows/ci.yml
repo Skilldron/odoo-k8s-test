@@ -1,5 +1,7 @@
-# CI: lint, then build / test / smoke test of the prod image, then publication on GHCR.
-# One image per version: built once per git tree, then only retagged (docs/ci.md).
+# CI orchestrator: three groups of jobs (reusable workflows), see docs/ci.md.
+#   Quality    quality.yml   pre-commit
+#   Image      image.yml     base -> build -> tests + smoke -> publish
+#   Promotion  promote.yml   tag vX.Y.Z: last release candidate -> X.Y.Z
 # Jobs are thin wrappers around ci/*.sh, which run the same way locally.
 name: CI
 
@@ -18,114 +20,21 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  lint:
+  quality:
     if: github.ref_type != 'tag'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "22"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-      - name: pre-commit (same configuration as the git hook)
-        run: |
-          pip install "$(grep -E '^pre-commit==' requirements-dev.txt)"
-          pre-commit run --all-files --show-diff-on-failure
+    uses: ./.github/workflows/quality.yml
 
   image:
     if: github.ref_type != 'tag'
-    needs: lint
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    needs: quality
+    uses: ./.github/workflows/image.yml
     permissions:
       contents: read
       packages: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Image name and publication
-        env:
-          REPOSITORY: ${{ github.repository }}
-          # Pull requests from forks get no write token: build and test only
-          PUBLISH:
-            ${{ github.event_name != 'pull_request' ||
-            github.event.pull_request.head.repo.full_name == github.repository }}
-        run: |
-          echo "IMAGE=ghcr.io/${REPOSITORY,,}" >>"$GITHUB_ENV"
-          echo "PUBLISH=$PUBLISH" >>"$GITHUB_ENV"
-      - if: env.PUBLISH == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build (or reuse the image of this git tree)
-        id: build
-        env:
-          CACHE_FROM: type=gha
-          CACHE_TO: ${{ env.PUBLISH == 'true' && 'type=gha,mode=max' || '' }}
-        run: ci/image-build.sh
-      - name: Tests
-        if: steps.build.outputs.reused == 'false'
-        env:
-          TREE: ${{ steps.build.outputs.tree }}
-        run: ci/run-tests.sh "$IMAGE:tree-$TREE-test"
-      - name: Smoke test
-        if: steps.build.outputs.reused == 'false'
-        env:
-          TREE: ${{ steps.build.outputs.tree }}
-        run: ci/smoke.sh "$IMAGE:tree-$TREE"
-      - name: Publish
-        if: env.PUBLISH == 'true'
-        env:
-          EVENT: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.number }}
-          REF_NAME: ${{ github.ref_name }}
-          RUN_NUMBER: ${{ github.run_number }}
-          SHA: ${{ github.sha }}
-        run: |
-          tags=("sha-${SHA::7}")
-          if [ "$EVENT" = pull_request ]; then
-              tags+=("pr-$PR_NUMBER")
-          else
-              case "$REF_NAME" in
-                  develop | main | [0-9]*.0) tags+=("$REF_NAME") ;;
-                  release/*) tags+=("${REF_NAME#release/}-rc.$RUN_NUMBER") ;;
-              esac
-          fi
-          ci/image-publish.sh "${tags[@]}"
 
   promote:
-    # Tag vX.Y.Z: the image of the tagged tree, already built and tested, becomes X.Y.Z
     if: github.ref_type == 'tag'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    uses: ./.github/workflows/promote.yml
     permissions:
       contents: read
       packages: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Promote without rebuild
-        env:
-          REPOSITORY: ${{ github.repository }}
-          REF_NAME: ${{ github.ref_name }}
-        run: IMAGE="ghcr.io/${REPOSITORY,,}" ci/image-publish.sh "${REF_NAME#v}"

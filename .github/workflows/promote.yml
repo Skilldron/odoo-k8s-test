@@ -1,0 +1,35 @@
+# Promotion group (called by ci.yml on a tag vX.Y.Z): the last release candidate
+# X.Y.Z-rc.N becomes X.Y.Z, same digest, no rebuild, refused when the tagged sources differ
+# from the candidate's (see ci/image-promote.sh). The only promotion of the pipeline.
+name: Promotion
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Last release candidate -> X.Y.Z
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: IMAGE="ghcr.io/${REPOSITORY,,}" ci/image-promote.sh "${REF_NAME#v}"

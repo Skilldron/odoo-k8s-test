@@ -1,0 +1,59 @@
+# Cleanup of the disposable GHCR packages (builds, base). The release package
+# (x.y.z-rc.N, x.y.z) is never pruned. Prerequisite: in the settings of each package,
+# give this repository Actions access with the Admin role (deleting versions).
+name: Cleanup
+
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    # Closed pull request: its preview image (builds:pr-<n>) is no longer needed
+    if:
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Delete builds:pr-<n>
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: |
+          name="${GITHUB_REPOSITORY#*/}"
+          ci/ghcr-prune.sh "${name,,}/builds" "tag:pr-$PR_NUMBER"
+
+  prune:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prune builds and base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          name="${GITHUB_REPOSITORY#*/}"
+          name="${name,,}"
+          # builds: 30 most recent, plus long-lived tags and open pull request previews
+          # (deleted when the pull request closes)
+          ci/ghcr-prune.sh "$name/builds" 'keep:30:^(develop|main|[0-9]+\.0|pr-[0-9]+)$'
+          ci/ghcr-prune.sh "$name/base" 'keep:5'
