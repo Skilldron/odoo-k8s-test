@@ -48,6 +48,8 @@ repos:
     hooks:
       - id: pylint_odoo
         args: ["--rcfile=.pylintrc"]
+        # Odoo module rules: project addons only (not the ci/ and docker/ scripts)
+        files: ^addons/
 
   - repo: local
     hooks:

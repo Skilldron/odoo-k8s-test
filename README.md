@@ -42,13 +42,32 @@ Hors VS Code : `docker compose up -d` puis `docker compose exec odoo odoo -d odo
 
 ```
 .devcontainer/   configuration du dev container
+.github/         workflows GitHub Actions (CI, mise à jour de l'image Odoo), Dependabot
 .vscode/         debug (launch.json) et tâches
 addons/          addons du projet (dev_sample = module d'exemple, supprimable)
 vendor/          modules achetés (Odoo Apps Store), tels quels
-docker/          Dockerfile multi-stage et odoo.conf de dev
+ci/              scripts de la CI, exécutables en local
+docker/          Dockerfile multi-stage, conf de dev, template de conf et entrypoint de prod
+docs/            CI et image de prod, modèle de branches, plans
 requirements.txt        dépendances Python des addons et modules OCA
 requirements-dev.txt    outillage développeur (image dev uniquement)
 ```
+
+## CI et image de prod
+
+À chaque PR et push, GitHub Actions lance pre-commit, construit l'**image de prod**
+(étape `prod` du Dockerfile), la teste (tests des modules de `addons/`, smoke test
+durci) et la publie sur GHCR. Une seule image par version : construite une fois, puis
+seulement retaguée jusqu'à la prod (tag git `vX.Y.Z`). La configuration propre à chaque
+environnement passe par des variables d'environnement au démarrage du conteneur.
+
+Le déploiement n'est pas inclus dans cette branche : voir les branches
+`20.0-docker-deployment` / `20.0-k8s-deployment`, ou le faire soi-même.
+
+- [docs/ci.md](docs/ci.md) : pipeline, tags d'image, variables de configuration, exemple
+  de déploiement.
+- [docs/gitflow.md](docs/gitflow.md) : Git Flow recommandé pour les projets, cycle de
+  release, protection des branches.
 
 ## Modules tiers
 
@@ -124,4 +143,5 @@ docker buildx imagetools inspect odoo:20.0   # digest courant du tag 20.0
 ```
 
 Reporter le tag daté (`20.0-AAAAMMJJ`) et le digest dans `ARG ODOO_IMAGE`, puis _Dev
-Containers : Rebuild Container_.
+Containers : Rebuild Container_. Sur GitHub, le workflow `odoo-image-bump.yml` ouvre
+cette PR chaque semaine (`ci/odoo-image-latest.sh` fait la même vérification en local).

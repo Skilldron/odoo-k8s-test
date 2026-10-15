@@ -1,6 +1,16 @@
+# Build context of docker/Dockerfile: only what the image needs
 .git
+.github
+.devcontainer
+.vscode
+.claude
+ci
+docs
 node_modules
+third-party
 **/__pycache__
 .ruff_cache
 .pytest_cache
 .env
+.env.*
+*.log

@@ -2,6 +2,7 @@
 # user odoo uid 1000
 # builder stage : installs requirements.txt (OCA addons from git need git, kept out of the image)
 # dev stage for : developper tools (debugpy, ruff, pylint-odoo, pre-commit, node)
+# prod stage : the deployed image (addons + vendor), configured at runtime ; test : prod + coverage
 
 
 # Update Odoo : update the tag and add the digest (optionnal but recommanded) (docker buildx imagetools inspect odoo:20.0)
@@ -81,3 +82,40 @@ COPY --chown=odoo:odoo docker/odoo.dev.conf /etc/odoo/odoo.conf
 
 USER odoo
 WORKDIR /workspace
+
+########################################################################
+# prod: the single image of a version, promoted unchanged from review to production.
+# Environment specific values come at runtime (env variables, see docs/ci.md).
+FROM base AS prod
+
+ARG VERSION=dev
+ARG REVISION=unknown
+LABEL org.opencontainers.image.title="odoo" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      odoo.version="20.0"
+
+COPY --chown=odoo:odoo addons /opt/odoo/addons
+COPY --chown=odoo:odoo vendor /opt/odoo/vendor
+COPY docker/odoo.conf.template docker/render-config.py docker/entrypoint.sh /opt/odoo/
+
+# Rendered in /tmp: works with a read-only root filesystem (tmpfs on /tmp)
+ENV ODOO_RC=/tmp/odoo.conf \
+    ODOO_CONFIG_TEMPLATE=/opt/odoo/odoo.conf.template
+
+USER odoo
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -fsS http://localhost:8069/web/health || exit 1
+ENTRYPOINT ["/opt/odoo/entrypoint.sh"]
+CMD ["odoo"]
+
+########################################################################
+# test: prod + coverage, used by the CI tests only (never published)
+FROM prod AS test
+
+USER root
+COPY requirements-dev.txt /tmp/requirements-dev.txt
+RUN grep -E '^coverage==' /tmp/requirements-dev.txt > /tmp/coverage.txt \
+    && pip install --no-cache-dir -r /tmp/coverage.txt \
+    && rm /tmp/requirements-dev.txt /tmp/coverage.txt
+USER odoo

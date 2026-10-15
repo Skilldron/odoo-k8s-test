@@ -1,0 +1,52 @@
+# Weekly check of the official Odoo image: when the digest of odoo:<series> changed, opens
+# a pull request that updates ARG ODOO_IMAGE in docker/Dockerfile (never merged
+# automatically: the CI of the pull request validates the new image first).
+# Scheduled runs use the default branch; run it manually to target a version branch.
+name: Odoo image update
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Pushes made with GITHUB_TOKEN do not trigger the CI: set the ODOO_BUMP_TOKEN
+          # secret (fine-grained PAT or GitHub App token) to get the CI on the pull request
+          token: ${{ secrets.ODOO_BUMP_TOKEN || github.token }}
+      - name: Latest digest
+        id: latest
+        run: echo "image=$(ci/odoo-image-latest.sh)" >>"$GITHUB_OUTPUT"
+      - name: Pull request
+        if: steps.latest.outputs.image != ''
+        env:
+          GH_TOKEN: ${{ secrets.ODOO_BUMP_TOKEN || github.token }}
+          IMAGE: ${{ steps.latest.outputs.image }}
+          BASE: ${{ github.ref_name }}
+        run: |
+          tag="${IMAGE#odoo:}"
+          tag="${tag%%@*}"
+          branch="bot/odoo-image-$tag"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+              echo "$branch already exists."
+              exit 0
+          fi
+          sed -i "s|^ARG ODOO_IMAGE=.*|ARG ODOO_IMAGE=$IMAGE|" docker/Dockerfile
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "Odoo image: $tag"
+          git push origin "$branch"
+          gh pr create --base "$BASE" --head "$branch" --title "Odoo image: $tag" \
+              --body "Nouvelle image officielle \`$IMAGE\` (ci/odoo-image-latest.sh). Vérifier la CI avant de fusionner."

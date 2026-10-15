@@ -1,0 +1,29 @@
+# Weekly dependency update pull requests, validated by the CI, never merged automatically.
+# The Odoo base image is handled by .github/workflows/odoo-image-bump.yml, the pre-commit
+# hooks by `pre-commit autoupdate` (see docs/ci.md).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # 9.13+ needs psutil>=7, incompatible with the psutil pinned by Odoo (apt)
+      - dependency-name: ipython
+        versions: [">=9.13"]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      lint:
+        patterns: ["*"]
