@@ -1,0 +1,6 @@
+apiVersion: v2
+name: odoo
+description: Odoo 20 du projet (review, recette, production), déployé par ci/deploy.sh
+type: application
+version: 0.1.0
+appVersion: "20.0"

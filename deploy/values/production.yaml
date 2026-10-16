@@ -1,0 +1,43 @@
+# Production: release odoo in <project>-prod, deployed from the v* tags.
+# CNPG database, restore point before each update, real SMTP (password in the application
+# Secret, key smtp-password).
+environment: production
+
+odoo:
+  config:
+    options:
+      workers: 4
+      max_cron_threads: 2
+      smtp_server: smtp.example.com
+      smtp_port: 587
+      smtp_ssl: true
+      smtp_user: odoo@example.com
+      email_from: odoo@example.com
+  persistence:
+    size: 20Gi
+  resources:
+    requests: {cpu: 500m, memory: 2Gi}
+    limits: {memory: 4Gi}
+
+secrets:
+  existingSecret: odoo-app
+
+database:
+  type: cnpg
+  cnpg:
+    size: 20Gi
+    objectStore: odoo-backups
+
+snapshots:
+  volumeSnapshotClass: csi-snapclass
+
+route:
+  parentRefs:
+    - {name: gateway, namespace: gateway-system}
+  host: odoo.example.com
+
+networkPolicy:
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: gateway-system

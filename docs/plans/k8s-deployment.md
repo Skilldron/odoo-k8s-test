@@ -741,6 +741,31 @@ Constats pour la suite :
     précédents) ;
   - rollback manuel.
 
+**Phase 2, résultats (2026-10-16).** `ci/chart-lint.sh` : 23 contrôles sur 23.
+`ci/chart-e2e.sh` : 32 scénarios sur 32, sur kind (Kubernetes 1.37), en PSA
+`restricted`, NetworkPolicy actives. Écarts et corrections :
+
+- **Noms préfixés par la release** : `<release>-odoo-data-<g>`, `<release>-pg-<g>`,
+  `<release>-pgdata-<digest court>`, `<release>-secrets` (plusieurs reviews partagent un
+  namespace).
+- **Pas d'`inheritedMetadata` sur le `Cluster` CNPG** : ses labels `app.kubernetes.io/*`
+  écrasaient ceux de CNPG sur le volume de l'instance, et la sauvegarde `volumeSnapshot`
+  restait bloquée sans erreur. La NetworkPolicy de la base vise `cnpg.io/cluster`.
+- **`serverName` Barman = `<namespace>-<release>-pg-<g>`** : Barman refuse d'archiver
+  dans un dossier non vide ; deux environnements sur le même bucket, ou un environnement
+  réinstallé, se bloqueraient.
+- **Digests réels en e2e** : registre local branché sur kind (`kind load` ne permet pas
+  de référencer une image par digest).
+- Les points de restauration et le rollback sont pilotés par des fonctions de
+  `ci/chart-e2e.sh`, qui préfigurent `ci/deploy.sh` (phase 3). Le rollback manuel est
+  reporté à la phase 3 (`ci/deploy-rollback.sh`).
+- La Gateway n'est pas installée dans kind : seules les CRD Gateway API le sont
+  (`HTTPRoute` validées). HTTPS et websocket restent testés en phase 6.
+- L'exclusion des templates Helm de prettier et de check-yaml (§8) est faite dès la
+  phase 2, pour pouvoir committer le chart.
+- **Point ouvert** : en recette et en prod, `odoo -i` sur une base vide laisse l'admin
+  avec le mot de passe `admin`. À traiter en phase 3.
+
 **Phase 6, scénarios :**
 
 1. PR → URL HTTPS, connexion, websocket (bus), mails visibles dans Mailpit ;

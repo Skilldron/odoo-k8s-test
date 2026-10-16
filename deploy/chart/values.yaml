@@ -1,0 +1,119 @@
+# Defaults shared by every environment. deploy/values/<env>.yaml overrides them; the CI
+# only adds image.digest, the step settings (odoo.replicas, jobs.migrate.run) and, on a
+# rollback, generation and restore. See docs/plans/k8s-deployment.md §6.
+
+# review | recette | production (required)
+environment: ""
+
+# Project name: prefix of the review hosts (<project>-<release>.<route.reviewDomain>)
+project: odoo
+
+image:
+  repository: ghcr.io/owner/repo/builds
+  # sha256:<64 hex>, set by the CI. The image is always referenced by digest.
+  digest: ""
+  # Names of existing docker-registry Secrets (GHCR)
+  pullSecrets: []
+
+# Integer suffix of the recette/prod database cluster and filestore volume (§3.3)
+generation: 1
+
+odoo:
+  # 0 or 1, set by ci/deploy.sh at each step
+  replicas: 0
+  # Modules installed by the migrate Job (odoo -i). ci/chart-lint.sh checks that the list
+  # matches the folders of addons/.
+  modules: [dev_sample]
+  # odoo.conf, section by section. The chart imposes addons_path, data_dir and
+  # http_interface (and the SMTP of Mailpit when it is enabled). No secret here: the
+  # schema refuses option names containing passw, secret or token.
+  config:
+    options:
+      proxy_mode: true
+      list_db: false
+      workers: 2
+      max_cron_threads: 1
+      limit_memory_soft: 2147483648
+      limit_memory_hard: 2684354560
+      limit_time_cpu: 600
+      limit_time_real: 1200
+  persistence:
+    storageClass: ""
+    size: 5Gi
+  resources:
+    requests: {cpu: 250m, memory: 1Gi}
+    limits: {memory: 3Gi}
+
+jobs:
+  migrate:
+    # Rendered only when true (ci/deploy.sh, step 4)
+    run: false
+    activeDeadlineSeconds: 1800
+    ttlSecondsAfterFinished: 604800
+
+secrets:
+  # Application Secret (keys admin-passwd, optional smtp-password). Required outside
+  # review; in review the chart generates its own Secret.
+  existingSecret: ""
+  # Secrets of the modules, as environment variables: [{name, secret, key}]
+  env: []
+
+database:
+  # ephemeral (review only) | cnpg | external
+  type: cnpg
+  # Database name (ephemeral; cnpg creates it with this name)
+  name: odoo
+  ephemeral:
+    image: postgres:18
+    storageClass: ""
+    size: 2Gi
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {memory: 1Gi}
+  cnpg:
+    imageName: ghcr.io/cloudnative-pg/postgresql:18
+    storageClass: ""
+    size: 10Gi
+    # Barman Cloud ObjectStore provided by the administrator: WAL archiving and the nightly
+    # backup are enabled when set.
+    objectStore: ""
+    backupSchedule: "0 0 2 * * *"
+    resources:
+      requests: {cpu: 250m, memory: 512Mi}
+      limits: {memory: 2Gi}
+  external:
+    # Secret with the keys host, port, username, password, dbname (as CNPG's -app Secret)
+    secret: ""
+
+snapshots:
+  # VolumeSnapshotClass of the restore points (cnpg backups and filestore)
+  volumeSnapshotClass: ""
+
+# Set by a rollback, with generation + 1: VolumeSnapshots to restore from
+restore:
+  database: ""
+  filestore: ""
+
+mailpit:
+  enabled: false
+  image: axllent/mailpit:v1.31.4
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
+route:
+  # Gateway API parentRefs of the administrator's Gateway; no HTTPRoute when empty
+  parentRefs: []
+  # Odoo host (recette, production)
+  host: ""
+  # Mailpit host (recette)
+  mailpitHost: ""
+  # Review hosts: <project>-<release>.<reviewDomain> and <project>-<release>-mail.<reviewDomain>
+  reviewDomain: ""
+
+networkPolicy:
+  enabled: true
+  # NetworkPolicyPeers allowed to reach Odoo and Mailpit (the Gateway). Empty: any source.
+  ingressFrom: []
+  # Namespace of the CNPG operator, which must reach the database pods
+  cnpgOperatorNamespace: cnpg-system

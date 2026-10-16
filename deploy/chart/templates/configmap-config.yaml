@@ -1,0 +1,10 @@
+{{- include "odoo.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "odoo.labels" . | nindent 4 }}
+data:
+  odoo.conf: |
+    {{- include "odoo.conf" . | nindent 4 }}

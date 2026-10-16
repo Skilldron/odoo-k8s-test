@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "odoo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: odoo
+spec:
+  replicas: {{ .Values.odoo.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "odoo.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: odoo
+  template:
+    metadata:
+      labels:
+        {{- include "odoo.labels" . | nindent 8 }}
+        app.kubernetes.io/component: odoo
+      annotations:
+        checksum/config: {{ include "odoo.conf" . | sha256sum }}
+    spec:
+      {{- include "odoo.podCommon" . | nindent 6 }}
+      containers:
+        - name: odoo
+          image: {{ include "odoo.image" . }}
+          env:
+            {{- include "odoo.env" . | nindent 12 }}
+          ports:
+            - {name: http, containerPort: 8069}
+            {{- if gt (include "odoo.workers" . | int) 0 }}
+            - {name: websocket, containerPort: 8072}
+            {{- end }}
+          startupProbe:
+            httpGet: {path: /web/health, port: http}
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /web/health, port: http}
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /web/health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.odoo.resources | nindent 12 }}
+          securityContext:
+            {{- include "odoo.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            {{- include "odoo.volumeMounts" . | nindent 12 }}
+        {{- if .Values.mailpit.enabled }}
+        - name: mailpit
+          image: {{ .Values.mailpit.image }}
+          ports:
+            - {name: smtp, containerPort: 1025}
+            - {name: mailpit, containerPort: 8025}
+          readinessProbe:
+            httpGet: {path: /readyz, port: mailpit}
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.mailpit.resources | nindent 12 }}
+          securityContext:
+            {{- include "odoo.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+        {{- end }}
+      volumes:
+        {{- include "odoo.volumes" . | nindent 8 }}

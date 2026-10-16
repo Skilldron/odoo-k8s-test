@@ -1,0 +1,74 @@
+{{- /*
+CNPG database (recette, production). One cluster per generation, kept by Helm: a rollback
+bootstraps generation g+1 from the restore point snapshot and leaves g in place (§3.3).
+*/ -}}
+{{- if eq .Values.database.type "cnpg" }}
+{{- $cluster := include "odoo.cnpgCluster" . }}
+{{- $cnpg := .Values.database.cnpg }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ $cluster }}
+  labels:
+    {{- include "odoo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  instances: 1
+  imageName: {{ $cnpg.imageName }}
+  storage:
+    size: {{ $cnpg.size }}
+    {{- with $cnpg.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+  resources:
+    {{- toYaml $cnpg.resources | nindent 4 }}
+  # No inheritedMetadata with app.kubernetes.io/* labels: they would override CNPG's own
+  # labels on the instance PVCs, and snapshot backups would no longer find them.
+  bootstrap:
+    {{- if .Values.restore.database }}
+    recovery:
+      database: {{ .Values.database.name }}
+      owner: odoo
+      volumeSnapshots:
+        storage:
+          name: {{ .Values.restore.database }}
+          kind: VolumeSnapshot
+          apiGroup: snapshot.storage.k8s.io
+    {{- else }}
+    initdb:
+      database: {{ .Values.database.name }}
+      owner: odoo
+    {{- end }}
+  backup:
+    volumeSnapshot:
+      className: {{ .Values.snapshots.volumeSnapshotClass }}
+  {{- with $cnpg.objectStore }}
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: {{ . }}
+        # Unique per namespace: Barman refuses to archive into a non-empty folder
+        serverName: {{ $.Release.Namespace }}-{{ $cluster }}
+  {{- end }}
+{{- if $cnpg.objectStore }}
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: {{ $cluster }}-nightly
+  labels:
+    {{- include "odoo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  cluster:
+    name: {{ $cluster }}
+  schedule: {{ $cnpg.backupSchedule | quote }}
+  backupOwnerReference: self
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+{{- end }}
+{{- end }}

@@ -1,0 +1,38 @@
+# Recette: release odoo in <project>-recette, deployed from release/* and hotfix/*.
+# CNPG database kept across deployments, restore point before each update, Mailpit.
+environment: recette
+
+odoo:
+  config:
+    options:
+      workers: 2
+      max_cron_threads: 1
+  persistence:
+    size: 5Gi
+
+secrets:
+  existingSecret: odoo-app
+
+database:
+  type: cnpg
+  cnpg:
+    size: 10Gi
+    objectStore: odoo-backups
+
+snapshots:
+  volumeSnapshotClass: csi-snapclass
+
+mailpit:
+  enabled: true
+
+route:
+  parentRefs:
+    - {name: gateway, namespace: gateway-system}
+  host: recette.example.com
+  mailpitHost: mail.recette.example.com
+
+networkPolicy:
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: gateway-system

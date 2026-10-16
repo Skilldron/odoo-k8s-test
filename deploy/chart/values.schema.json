@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["environment", "image", "odoo", "database"],
+  "definitions": {
+    "iniScalar": {
+      "anyOf": [
+        {"type": "string", "pattern": "^[^\\n\\r]*$"},
+        {"type": "number"},
+        {"type": "boolean"},
+        {"type": "null"}
+      ]
+    },
+    "iniSection": {
+      "type": ["object", "null"],
+      "propertyNames": {
+        "pattern": "^[a-z0-9_.]+$",
+        "not": {"pattern": "passw|secret|token"}
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {"$ref": "#/definitions/iniScalar"},
+          {"type": "array", "items": {"$ref": "#/definitions/iniScalar"}}
+        ]
+      }
+    }
+  },
+  "properties": {
+    "environment": {"enum": ["review", "recette", "production"]},
+    "project": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+    "image": {
+      "type": "object",
+      "required": ["repository", "digest"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "pullSecrets": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "generation": {"type": "integer", "minimum": 1},
+    "odoo": {
+      "type": "object",
+      "properties": {
+        "replicas": {"enum": [0, 1]},
+        "modules": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[a-z0-9_]+$"}
+        },
+        "config": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z0-9_.]+$"},
+          "additionalProperties": {"$ref": "#/definitions/iniSection"}
+        }
+      }
+    },
+    "jobs": {
+      "type": "object",
+      "properties": {
+        "migrate": {
+          "type": "object",
+          "properties": {
+            "run": {"type": "boolean"},
+            "activeDeadlineSeconds": {"type": "integer", "minimum": 60},
+            "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "env": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "secret", "key"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$"},
+              "secret": {"type": "string", "minLength": 1},
+              "key": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": {"enum": ["ephemeral", "cnpg", "external"]},
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"}
+      }
+    },
+    "restore": {
+      "type": "object",
+      "properties": {
+        "database": {"type": "string"},
+        "filestore": {"type": "string"}
+      }
+    },
+    "mailpit": {
+      "type": "object",
+      "properties": {"enabled": {"type": "boolean"}}
+    },
+    "route": {
+      "type": "object",
+      "properties": {
+        "parentRefs": {"type": "array"},
+        "host": {"type": "string"},
+        "mailpitHost": {"type": "string"},
+        "reviewDomain": {"type": "string"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"database": {"properties": {"type": {"const": "ephemeral"}}}}
+      },
+      "then": {"properties": {"environment": {"const": "review"}}}
+    },
+    {
+      "if": {"properties": {"environment": {"const": "review"}}},
+      "then": {
+        "properties": {"database": {"properties": {"type": {"const": "ephemeral"}}}}
+      },
+      "else": {
+        "properties": {
+          "secrets": {
+            "required": ["existingSecret"],
+            "properties": {"existingSecret": {"minLength": 1}}
+          }
+        }
+      }
+    }
+  ]
+}

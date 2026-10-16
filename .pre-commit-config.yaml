@@ -6,7 +6,8 @@ exclude: |
   ^vendor/|
   /static/lib/|
   /static/description/index\.html$|
-  \.svg$
+  \.svg$|
+  ^deploy/chart/templates/
 default_language_version:
   python: python3
   node: system

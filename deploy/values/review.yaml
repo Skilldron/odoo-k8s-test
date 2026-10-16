@@ -1,0 +1,31 @@
+# Review apps: one release pr-<n> per pull request, in the shared namespace <project>-review.
+# Demo database recreated on every new image, Mailpit, threaded Odoo.
+environment: review
+
+odoo:
+  config:
+    options:
+      workers: 0
+      max_cron_threads: 1
+  persistence:
+    size: 1Gi
+  resources:
+    requests: {cpu: 100m, memory: 512Mi}
+    limits: {memory: 2Gi}
+
+database:
+  type: ephemeral
+
+mailpit:
+  enabled: true
+
+route:
+  parentRefs:
+    - {name: gateway, namespace: gateway-system}
+  reviewDomain: review.example.com
+
+networkPolicy:
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: gateway-system
