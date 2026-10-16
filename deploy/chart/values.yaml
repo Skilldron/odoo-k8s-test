@@ -15,7 +15,7 @@ image:
   # Names of existing docker-registry Secrets (GHCR)
   pullSecrets: []
 
-# Integer suffix of the recette/prod database cluster and filestore volume (§3.3)
+# Integer suffix of the recette/prod filestore volume, increased by a rollback (§3.3)
 generation: 1
 
 odoo:
@@ -59,9 +59,10 @@ secrets:
   env: []
 
 database:
-  # ephemeral (review only) | cnpg | external
-  type: cnpg
-  # Database name (ephemeral; cnpg creates it with this name)
+  # ephemeral (review only, created by this chart) | external (recette, production: a
+  # database installed apart, e.g. with the CloudNativePG "cluster" chart)
+  type: external
+  # Database name of the ephemeral database
   name: odoo
   ephemeral:
     image: postgres:18
@@ -70,28 +71,20 @@ database:
     resources:
       requests: {cpu: 100m, memory: 256Mi}
       limits: {memory: 1Gi}
-  cnpg:
-    imageName: ghcr.io/cloudnative-pg/postgresql:18
-    storageClass: ""
-    size: 10Gi
-    # Barman Cloud ObjectStore provided by the administrator: WAL archiving and the nightly
-    # backup are enabled when set.
-    objectStore: ""
-    backupSchedule: "0 0 2 * * *"
-    resources:
-      requests: {cpu: 250m, memory: 512Mi}
-      limits: {memory: 2Gi}
   external:
-    # Secret with the keys host, port, username, password, dbname (as CNPG's -app Secret)
+    # Secret with the keys host, port, username, password, dbname: the <cluster>-app
+    # Secret of CNPG, or a Secret created with the same keys for another database
     secret: ""
+    # Name of the CNPG Cluster, when the database is one: ci/deploy.sh then takes a
+    # database restore point before each update. Not used by the templates.
+    cnpgCluster: ""
 
 snapshots:
-  # VolumeSnapshotClass of the restore points (cnpg backups and filestore)
+  # VolumeSnapshotClass of the filestore restore points (used by ci/deploy.sh)
   volumeSnapshotClass: ""
 
-# Set by a rollback, with generation + 1: VolumeSnapshots to restore from
+# Set by a rollback, with generation + 1: VolumeSnapshot of the filestore to restore from
 restore:
-  database: ""
   filestore: ""
 
 mailpit:
@@ -114,6 +107,5 @@ route:
 networkPolicy:
   enabled: true
   # NetworkPolicyPeers allowed to reach Odoo and Mailpit (the Gateway). Empty: any source.
+  # An external database is protected by its own policy (deploy/examples).
   ingressFrom: []
-  # Namespace of the CNPG operator, which must reach the database pods
-  cnpgOperatorNamespace: cnpg-system

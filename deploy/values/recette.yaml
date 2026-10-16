@@ -1,5 +1,6 @@
 # Recette: release odoo in <project>-recette, deployed from release/* and hotfix/*.
-# CNPG database kept across deployments, restore point before each update, Mailpit.
+# Database installed apart (CNPG cluster chart or another PostgreSQL), restore point
+# before each update when it is a CNPG cluster, Mailpit.
 environment: recette
 
 odoo:
@@ -14,10 +15,10 @@ secrets:
   existingSecret: odoo-app
 
 database:
-  type: cnpg
-  cnpg:
-    size: 10Gi
-    objectStore: odoo-backups
+  type: external
+  external:
+    secret: odoo-db-app
+    cnpgCluster: odoo-db
 
 snapshots:
   volumeSnapshotClass: csi-snapclass

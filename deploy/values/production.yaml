@@ -1,6 +1,6 @@
 # Production: release odoo in <project>-prod, deployed from the v* tags.
-# CNPG database, restore point before each update, real SMTP (password in the application
-# Secret, key smtp-password).
+# CNPG database installed apart with the CloudNativePG cluster chart, restore point before
+# each update, real SMTP (password in the application Secret, key smtp-password).
 environment: production
 
 odoo:
@@ -23,10 +23,10 @@ secrets:
   existingSecret: odoo-app
 
 database:
-  type: cnpg
-  cnpg:
-    size: 20Gi
-    objectStore: odoo-backups
+  type: external
+  external:
+    secret: odoo-db-app
+    cnpgCluster: odoo-db
 
 snapshots:
   volumeSnapshotClass: csi-snapclass

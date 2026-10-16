@@ -1,6 +1,7 @@
 {{- /*
-Odoo (and Mailpit) reachable from networkPolicy.ingressFrom (the Gateway) only; the database
-reachable from the pods of the release only (plus the CNPG operator).
+Odoo (and Mailpit) reachable from networkPolicy.ingressFrom (the Gateway) only; the ephemeral
+database reachable from the pods of the release only. Egress stays open: Odoo reaches its
+external database, SMTP and APIs. An external database is protected by its own policy.
 */ -}}
 {{- if .Values.networkPolicy.enabled }}
 apiVersion: networking.k8s.io/v1
@@ -28,7 +29,7 @@ spec:
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-{{- if ne .Values.database.type "external" }}
+{{- if eq .Values.database.type "ephemeral" }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -39,12 +40,8 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      {{- if eq .Values.database.type "cnpg" }}
-      cnpg.io/cluster: {{ include "odoo.cnpgCluster" . }}
-      {{- else }}
       {{- include "odoo.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: postgres
-      {{- end }}
   policyTypes: [Ingress]
   ingress:
     - ports:
@@ -53,14 +50,5 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "odoo.selectorLabels" . | nindent 14 }}
-    {{- if eq .Values.database.type "cnpg" }}
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.networkPolicy.cnpgOperatorNamespace }}
-        - podSelector:
-            matchLabels:
-              cnpg.io/cluster: {{ include "odoo.cnpgCluster" . }}
-    {{- end }}
 {{- end }}
 {{- end }}

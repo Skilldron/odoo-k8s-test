@@ -24,10 +24,6 @@
 {{ .Release.Name }}-pgdata-{{ include "odoo.shortDigest" . }}
 {{- end }}
 
-{{- define "odoo.cnpgCluster" -}}
-{{ .Release.Name }}-pg-{{ .Values.generation }}
-{{- end }}
-
 {{- define "odoo.generatedSecret" -}}
 {{ .Release.Name }}-secrets
 {{- end }}
@@ -141,11 +137,11 @@ smtp_port = 1025
 {{- if and (ne $v.environment "review") (not $v.secrets.existingSecret) -}}
 {{- fail "secrets.existingSecret is required outside review" -}}
 {{- end -}}
-{{- if and (eq $v.environment "review") (or $v.restore.database $v.restore.filestore) -}}
+{{- if and (eq $v.environment "review") $v.restore.filestore -}}
 {{- fail "restore is not available in review" -}}
 {{- end -}}
-{{- if and (eq $v.database.type "cnpg") (not $v.snapshots.volumeSnapshotClass) -}}
-{{- fail "snapshots.volumeSnapshotClass is required with database.type=cnpg" -}}
+{{- if not (has $v.database.type (list "ephemeral" "external")) -}}
+{{- fail "database.type must be ephemeral or external" -}}
 {{- end -}}
 {{- if and (eq $v.database.type "external") (not $v.database.external.secret) -}}
 {{- fail "database.external.secret is required with database.type=external" -}}
@@ -220,7 +216,7 @@ capabilities:
 - name: PGDATABASE
   value: {{ .Values.database.name | quote }}
 {{- else }}
-{{- $secret := ternary (printf "%s-app" (include "odoo.cnpgCluster" .)) .Values.database.external.secret (eq .Values.database.type "cnpg") }}
+{{- $secret := .Values.database.external.secret }}
 {{- range $env, $key := dict "PGHOST" "host" "PGPORT" "port" "PGUSER" "username" "PGPASSWORD" "password" "PGDATABASE" "dbname" }}
 - name: {{ $env }}
   valueFrom:

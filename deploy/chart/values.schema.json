@@ -88,16 +88,21 @@
       "type": "object",
       "required": ["type", "name"],
       "properties": {
-        "type": {"enum": ["ephemeral", "cnpg", "external"]},
-        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"}
+        "type": {"enum": ["ephemeral", "external"]},
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"},
+        "external": {
+          "type": "object",
+          "properties": {
+            "secret": {"type": "string"},
+            "cnpgCluster": {"type": "string"}
+          }
+        }
       }
     },
     "restore": {
       "type": "object",
-      "properties": {
-        "database": {"type": "string"},
-        "filestore": {"type": "string"}
-      }
+      "additionalProperties": false,
+      "properties": {"filestore": {"type": "string"}}
     },
     "mailpit": {
       "type": "object",

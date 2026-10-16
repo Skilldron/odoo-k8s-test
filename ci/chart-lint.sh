@@ -54,10 +54,12 @@ for env in review recette production; do
         fail "kubeconform $env"
     fi
 done
-render recette --set generation=2 --set restore.database=db-snap \
-    --set restore.filestore=fs-snap >"$work/rollback.yaml"
-if grep -q "recovery:" "$work/rollback.yaml" && grep -q "name: fs-snap" "$work/rollback.yaml"; then
-    pass "rollback render (generation 2 restored from snapshots)"
+render recette --set generation=2 --set restore.filestore=fs-snap \
+    --set database.external.secret=odoo-db-2-app >"$work/rollback.yaml"
+if grep -q "name: odoo-odoo-data-2" "$work/rollback.yaml" &&
+    grep -q "name: fs-snap" "$work/rollback.yaml" &&
+    grep -q "name: odoo-db-2-app" "$work/rollback.yaml"; then
+    pass "rollback render (filestore generation 2 from its snapshot, restored database)"
 else
     fail "rollback render"
 fi
@@ -94,7 +96,10 @@ refused() { # refused <description> <env> [helm args...]
 }
 refused "ephemeral database in recette" recette --set database.type=ephemeral
 refused "ephemeral database in production" production --set database.type=ephemeral
-refused "review without ephemeral database" review --set database.type=cnpg
+refused "review without ephemeral database" review --set database.type=external \
+    --set database.external.secret=x
+refused "database managed by the chart in recette" recette --set database.type=cnpg
+refused "external database without Secret" production --set database.external.secret=
 refused "production without application Secret" production --set secrets.existingSecret=
 refused "password in odoo.conf" recette --set odoo.config.options.db_password=x
 refused "secret in a module section" recette --set odoo.config.queue_job.http_auth_password=x
@@ -103,7 +108,7 @@ refused "SMTP overridden while Mailpit is enabled" review --set odoo.config.opti
 refused "option also set by secrets.env" recette --set odoo.config.queue_job.http_auth_user=u \
     --set-json 'secrets.env=[{"name":"ODOO_QUEUE_JOB_HTTP_AUTH_USER","secret":"s","key":"k"}]'
 refused "image referenced by tag" recette --set image.digest=latest
-refused "restore in review" review --set restore.database=x
+refused "restore in review" review --set restore.filestore=x
 
 # 5. No destructive command in any render; reviews only reset through their volumes
 if grep -nEw 'dropdb|rm' "$work"/*.yaml || grep -nE 'DROP DATABASE|--force' "$work"/*.yaml; then

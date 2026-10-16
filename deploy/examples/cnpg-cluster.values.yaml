@@ -1,0 +1,56 @@
+# Database of a recette or production environment, installed by the administrator with the
+# CloudNativePG "cluster" chart, not by the CI:
+#
+#   helm install odoo-db cluster --repo https://cloudnative-pg.github.io/charts \
+#     --version 0.9.0 -n <project>-prod -f deploy/examples/cnpg-cluster.values.yaml
+#
+# Creates the Cluster "odoo-db" and the Secret "odoo-db-app", read by Odoo
+# (database.external.secret and database.external.cnpgCluster in deploy/values/<env>.yaml).
+# Requires the CNPG operator, the Barman Cloud plugin and a Secret "odoo-db-s3" with the keys
+# ACCESS_KEY_ID and ACCESS_SECRET_KEY.
+fullnameOverride: odoo-db
+type: postgresql
+version:
+  postgresql: "18"
+mode: standalone
+
+cluster:
+  instances: 1
+  storage:
+    size: 20Gi
+    storageClass: ""
+  enableSuperuserAccess: false
+  # A single instance: a PodDisruptionBudget would block node drains
+  enablePDB: false
+  initdb:
+    database: odoo
+    owner: odoo
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+
+backups:
+  enabled: true
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  provider: s3
+  # S3-compatible endpoint; empty for AWS (then s3.region is required)
+  endpointURL: ""
+  # One folder per environment: Barman refuses to archive into a non-empty folder
+  destinationPath: s3://odoo-backups/project-prod/
+  s3:
+    region: eu-west-3
+  # The chart asks for server-side encryption AES256 (wal.encryption, data.encryption):
+  # set both to "" for a store without it (MinIO without KMS refuses every upload)
+  secret:
+    create: false
+    name: odoo-db-s3
+  scheduledBackups:
+    - name: nightly
+      schedule: "0 0 2 * * *"
+      backupOwnerReference: self
+      method: plugin
+      pluginConfiguration:
+        name: barman-cloud.cloudnative-pg.io
+  retentionPolicy: 30d

@@ -3,12 +3,16 @@
 # local kind cluster. Installs, for the test only, a local registry (real image digests),
 # snapshot-controller, csi-driver-host-path, cert-manager, CNPG with the Barman Cloud
 # plugin, the Gateway API CRDs and MinIO. This is not a reference cluster installation.
+# The recette database is installed apart, as an administrator would, with the CNPG
+# "cluster" chart and deploy/examples/cnpg-cluster.values.yaml.
 #
 # Builds two variants of the prod image (dev_sample with a new field, then with a broken
 # view) and runs: review install, restart, new image (reset); guards; recette first
-# install, update with restore point, broken update then rollback to a new generation.
+# install, update with restore point, broken update, then the restore runbook (database
+# recovered to the restore point in a new cluster, filestore from its snapshot).
 #
-# Uses its own kubeconfig: the current kubectl context is never touched.
+# Uses its own kubeconfig and Helm home: the current kubectl context and Helm repositories
+# are never touched.
 # Usage: ci/chart-e2e.sh <prod-image>
 # Env: E2E_CLUSTER (odoo-e2e), E2E_REGISTRY_PORT (5001), KEEP_CLUSTER=1 to keep the
 #      cluster and the registry, KIND (kind binary).
@@ -30,6 +34,7 @@ CERT_MANAGER_VERSION=v1.21.2
 CNPG_VERSION=1.30.1
 BARMAN_PLUGIN_VERSION=v0.15.1
 GATEWAY_API_VERSION=v1.6.3
+CNPG_CLUSTER_CHART_VERSION=0.9.0
 REGISTRY_IMAGE=registry:3.1.1
 MINIO_IMAGE=cgr.dev/chainguard/minio:latest
 MC_IMAGE=cgr.dev/chainguard/minio-client:latest
@@ -37,6 +42,9 @@ SNAPCLASS=e2e-retain
 
 work="$(mktemp -d)"
 export KUBECONFIG="$work/kubeconfig"
+# Helm cache, repositories and plugins of the test only, not the user's
+export HELM_CACHE_HOME="$work/helm/cache" HELM_CONFIG_HOME="$work/helm/config" \
+    HELM_DATA_HOME="$work/helm/data"
 failures=0
 results=()
 
@@ -163,27 +171,31 @@ EOF
         kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
         kubectl label --overwrite namespace "$ns" pod-security.kubernetes.io/enforce=restricted >/dev/null
     done
-    # Recette prerequisites (§4): application Secret and Barman Cloud ObjectStore
+    # Recette prerequisites (§4): application Secret, S3 credentials of the database
     kubectl -n e2e-recette create secret generic odoo-app \
         --from-literal=admin-passwd="$(openssl rand -hex 16)" \
         --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-    kubectl apply -f - >/dev/null <<EOF
-apiVersion: v1
-kind: Secret
-metadata: {name: s3, namespace: e2e-recette}
-stringData: {ACCESS_KEY_ID: e2e, ACCESS_SECRET_KEY: e2e-minio-password}
----
-apiVersion: barmancloud.cnpg.io/v1
-kind: ObjectStore
-metadata: {name: odoo-backups, namespace: e2e-recette}
-spec:
-  configuration:
-    destinationPath: s3://backups/
-    endpointURL: http://minio.minio:9000
-    s3Credentials:
-      accessKeyId: {name: s3, key: ACCESS_KEY_ID}
-      secretAccessKey: {name: s3, key: ACCESS_SECRET_KEY}
-EOF
+    kubectl -n e2e-recette create secret generic odoo-db-s3 \
+        --from-literal=ACCESS_KEY_ID=e2e --from-literal=ACCESS_SECRET_KEY=e2e-minio-password \
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+}
+
+# The database of the recette, installed apart with the CNPG cluster chart (an
+# administrator's task); extra helm args select a recovery (runbook)
+install_database() { # install_database <ns> <release> [helm args...]
+    local ns="$1" release="$2"
+    shift 2
+    helm upgrade --install "$release" cluster --repo https://cloudnative-pg.github.io/charts \
+        --version "$CNPG_CLUSTER_CHART_VERSION" -n "$ns" \
+        -f deploy/examples/cnpg-cluster.values.yaml \
+        --set fullnameOverride="$release" --set cluster.storage.size=2Gi \
+        --set backups.endpointURL=http://minio.minio:9000 \
+        --set backups.destinationPath="s3://backups/$ns/" \
+        --set backups.wal.encryption= --set backups.data.encryption= "$@" >/dev/null ||
+        return 1
+    kubectl -n "$ns" wait "cluster/$release" --for=condition=Ready --timeout=600s >/dev/null &&
+        kubectl -n "$ns" wait "cluster/$release" --for=condition=ContinuousArchiving \
+            --timeout=300s >/dev/null
 }
 
 # ---------------------------------------------------------------------------------------
@@ -228,21 +240,12 @@ helm_odoo() { # helm_odoo <ns> <release> <env> <digest> [helm args...]
     helm upgrade --install "$release" deploy/chart -n "$ns" -f "deploy/values/$env.yaml" \
         --set image.repository="$repo" --set image.digest="$digest" \
         --set odoo.persistence.storageClass=csi-hostpath-sc \
-        --set database.cnpg.storageClass=csi-hostpath-sc \
         --set snapshots.volumeSnapshotClass="$SNAPCLASS" "$@" >/dev/null
 }
 
 short() {
     local d="${1#sha256:}"
     echo "${d:0:12}"
-}
-
-generation_of() { # the generation=N among helm args, 1 by default
-    local arg
-    for arg in "$@"; do
-        case "$arg" in generation=*) echo "${arg#generation=}" && return ;; esac
-    done
-    echo 1
 }
 
 stop_odoo() { # stop_odoo <ns> <release> <env> <digest> [helm args...]
@@ -252,11 +255,12 @@ stop_odoo() { # stop_odoo <ns> <release> <env> <digest> [helm args...]
         -l "app.kubernetes.io/instance=$release,app.kubernetes.io/component=odoo" >/dev/null 2>&1 || true
 }
 
-wait_database() { # wait_database <ns> <release> <env> [generation]
+wait_database() { # wait_database <ns> <release> <env>: ephemeral database, or the
+    # external CNPG cluster named by $db_cluster
     if [ "$3" = review ]; then
         kubectl -n "$1" rollout status "deploy/$2-postgres" --timeout=300s >/dev/null
     else
-        kubectl -n "$1" wait "cluster/$2-pg-${4:-1}" --for=condition=Ready --timeout=600s >/dev/null
+        kubectl -n "$1" wait "cluster/$db_cluster" --for=condition=Ready --timeout=600s >/dev/null
     fi
 }
 
@@ -285,17 +289,23 @@ start_odoo() { # start_odoo <ns> <release> <env> <digest> [helm args...]
 
 deploy() { # deploy <ns> <release> <env> <digest> [helm args...]: stop, migrate, start
     stop_odoo "$@" || return 1
-    wait_database "$1" "$2" "$3" "$(generation_of "$@")" || return 1
+    wait_database "$1" "$2" "$3" || return 1
     run_migrate "$@" || return 1
     start_odoo "$@"
 }
 
-restore_point() { # restore_point <ns> <release> <generation> <name>: cold, Odoo at 0
+restore_point() { # restore_point <ns> <release> <generation> <name>, Odoo at 0:
+    # database backup through the Barman Cloud plugin (the CNPG cluster chart cannot
+    # configure volume snapshot backups), filestore VolumeSnapshot; the restore point time
+    # is written to $work/<name>.time, the database recovery target
     kubectl apply -f - >/dev/null <<EOF || return 1
 apiVersion: postgresql.cnpg.io/v1
 kind: Backup
 metadata: {name: $4, namespace: $1}
-spec: {cluster: {name: $2-pg-$3}, method: volumeSnapshot, online: false}
+spec:
+  cluster: {name: $db_cluster}
+  method: plugin
+  pluginConfiguration: {name: barman-cloud.cloudnative-pg.io}
 ---
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshot
@@ -304,9 +314,23 @@ spec:
   volumeSnapshotClassName: $SNAPCLASS
   source: {persistentVolumeClaimName: $2-odoo-data-$3}
 EOF
-    kubectl -n "$1" wait "backup/$4" --for=jsonpath='{.status.phase}'=completed --timeout=300s >/dev/null &&
-        kubectl -n "$1" wait "volumesnapshot/$4" --for=jsonpath='{.status.readyToUse}'=true --timeout=300s >/dev/null &&
-        kubectl -n "$1" wait "volumesnapshot/$4-filestore" --for=jsonpath='{.status.readyToUse}'=true --timeout=300s >/dev/null
+    kubectl -n "$1" wait "backup/$4" --for=jsonpath='{.status.phase}'=completed --timeout=600s >/dev/null &&
+        kubectl -n "$1" wait "volumesnapshot/$4-filestore" --for=jsonpath='{.status.readyToUse}'=true --timeout=300s >/dev/null || return 1
+    sleep 2
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$work/$4.time"
+}
+
+archive_current_wal() { # archive_current_wal <ns> <cluster>: closes the current WAL segment
+    # and waits until it is archived, so a recovery can reach any time before now
+    local segment
+    segment="$(kubectl -n "$1" exec "$2-1" -c postgres -- psql -U postgres -tAc \
+        "select pg_walfile_name(pg_switch_wal())")" || return 1
+    for _ in $(seq 1 60); do
+        kubectl -n "$1" exec "$2-1" -c postgres -- psql -U postgres -tAc \
+            "select last_archived_wal >= '$segment' from pg_stat_archiver" | grep -q t && return 0
+        sleep 5
+    done
+    return 1
 }
 
 # ---------------------------------------------------------------------------------------
@@ -352,6 +376,7 @@ equals() { [ "$1" = "$2" ]; }
 contains() { [[ "$1" == *"$2"* ]]; }
 not_contains() { [[ "$1" != *"$2"* ]]; }
 fails() { ! "$@"; }
+exists() { kubectl -n "$1" get "${@:2}" -o name >/dev/null; } # exists <ns> <resource...>
 
 # ---------------------------------------------------------------------------------------
 log "Cluster $cluster, registry localhost:$reg_port"
@@ -408,9 +433,13 @@ check "garde-fou : aucune release créée" equals "$(helm -n e2e-recette list -q
 # Recette -----------------------------------------------------------------------------
 ns=e2e-recette
 rel=odoo
+db_cluster=odoo-db
 # odoo -i on an empty database sets the admin password to "admin"
 admin_pw="admin"
-log "Recette: first install (CNPG, migrate on an empty database)"
+log "Recette: database installed apart (CNPG cluster chart), NetworkPolicy example"
+check "recette : base installée avec le chart CNPG officiel" install_database $ns odoo-db
+kubectl -n $ns apply -f deploy/examples/database-networkpolicy.yaml >/dev/null
+log "Recette: first install (migrate on the empty database)"
 check "recette : première installation" deploy $ns $rel recette "$DIGEST_A"
 check "recette : /web/health et /web/login à 200" http_ok $ns $rel
 rpc $ns $rel $admin_pw "call('res.partner', 'create', {'name': 'before-update'})" >/dev/null
@@ -418,7 +447,8 @@ check "recette : données saisies" equals "$(marker_count $ns $rel $admin_pw bef
 
 log "Recette: update with restore point"
 stop_odoo $ns $rel recette "$DIGEST_A"
-check "recette : point de restauration rp-1 (base à froid + filestore)" restore_point $ns $rel 1 rp-1
+check "recette : point de restauration rp-1 (sauvegarde Barman + filestore)" \
+    restore_point $ns $rel 1 rp-1
 check "recette : mise à jour (Job migrate)" run_migrate $ns $rel recette "$DIGEST_B"
 check "recette : démarrage" start_odoo $ns $rel recette "$DIGEST_B"
 check "recette : nouveau champ créé par click-odoo-update" \
@@ -426,23 +456,38 @@ check "recette : nouveau champ créé par click-odoo-update" \
 check "recette : données conservées" equals "$(marker_count $ns $rel $admin_pw before-update)" 1
 rpc $ns $rel $admin_pw "call('res.partner', 'create', {'name': 'after-update'})" >/dev/null
 
-log "Recette: broken module, then rollback to generation 2"
+log "Recette: broken module, Odoo stays stopped"
 stop_odoo $ns $rel recette "$DIGEST_B"
 check "recette : point de restauration rp-2" restore_point $ns $rel 1 rp-2
+# A write after the restore point, which the recovery must not bring back
+kubectl -n $ns exec $db_cluster-1 -c postgres -- psql -U postgres -d odoo -qc \
+    "create table e2e_after_restore_point (id int)"
 check "recette : module cassé, Job migrate en échec" fails run_migrate $ns $rel recette "$DIGEST_C"
 tail -3 "$work/job.log" | sed 's/^/    /'
-rollback=(--set generation=2 --set restore.database=rp-2 --set restore.filestore=rp-2-filestore)
-helm_odoo $ns $rel recette "$DIGEST_B" --set odoo.replicas=0 "${rollback[@]}"
-check "recette : génération 2 restaurée depuis rp-2" wait_database $ns $rel recette 2
-check "recette : redémarrage sur le digest précédent, sans Job" \
+check "recette : Odoo reste arrêté" \
+    equals "$(kubectl -n $ns get deploy $rel -o jsonpath='{.spec.replicas}')" 0
+check "recette : dernier WAL archivé" archive_current_wal $ns $db_cluster
+
+log "Recette: restore runbook (database odoo-db-2 at the restore point, filestore generation 2)"
+check "runbook : base odoo-db-2 restaurée à l'heure de rp-2 ($(cat "$work/rp-2.time"))" \
+    install_database $ns odoo-db-2 -f deploy/examples/cnpg-cluster-recovery.values.yaml \
+    --set recovery.pitrTarget.time="$(cat "$work/rp-2.time")"
+db_cluster=odoo-db-2
+rollback=(--set generation=2 --set restore.filestore=rp-2-filestore
+    --set database.external.secret=odoo-db-2-app --set database.external.cnpgCluster=odoo-db-2)
+check "runbook : redémarrage sur le digest précédent, sans Job" \
     start_odoo $ns $rel recette "$DIGEST_B" "${rollback[@]}"
-check "recette : /web/health et /web/login à 200 après rollback" http_ok $ns $rel
-check "recette : données du point de restauration" \
+check "runbook : /web/health et /web/login à 200" http_ok $ns $rel
+check "runbook : données du point de restauration présentes" \
     equals "$(marker_count $ns $rel $admin_pw after-update)" 1
-check "recette : génération 1 conservée pour analyse" \
-    kubectl -n $ns get "cluster/$rel-pg-1" "pvc/$rel-odoo-data-1" -o name
-check "recette : filestore créé depuis le snapshot" \
+check "runbook : écriture postérieure au point de restauration absente" \
+    equals "$(kubectl -n $ns exec odoo-db-2-1 -c postgres -- psql -U postgres -d odoo -tAc \
+        "select to_regclass('e2e_after_restore_point') is null")" t
+check "runbook : base en échec et ancien filestore conservés" \
+    exists $ns cluster/odoo-db pvc/$rel-odoo-data-1
+check "runbook : filestore créé depuis le snapshot" \
     equals "$(kubectl -n $ns get pvc $rel-odoo-data-2 -o jsonpath='{.spec.dataSource.name}')" rp-2-filestore
+check "runbook : archivage des WAL de odoo-db-2" archive_current_wal $ns odoo-db-2
 
 {
     echo "### Chart Helm, scénarios e2e (kind)"

@@ -1,0 +1,30 @@
+# Optional, for a namespace whose traffic is denied by default: lets Odoo (and its Jobs)
+# reach the CNPG database, and the CNPG operator and plugin manage it. Every CNPG cluster of
+# the namespace is covered, including one restored by the runbook (odoo-db-2).
+#   kubectl -n <project>-prod apply -f deploy/examples/database-networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: odoo-db
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: cnpg.io/cluster, operator: Exists}
+  policyTypes: [Ingress]
+  ingress:
+    # Odoo pods and Jobs of the release "odoo"
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: odoo
+              app.kubernetes.io/instance: odoo
+      ports:
+        - {port: 5432}
+    # CNPG operator and Barman Cloud plugin (status, fencing, backups), and the instances
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+        - podSelector:
+            matchExpressions:
+              - {key: cnpg.io/cluster, operator: Exists}
