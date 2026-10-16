@@ -2,10 +2,22 @@
 # The image goes from job to job through the disposable builds package (tag run-<id>);
 # readable tags (pr-<n>, develop, x.y.z-rc.N...) are only set after tests and smoke test.
 # Pull requests from forks cannot push: the "local" job builds and tests without publishing.
+# Outputs (deployment jobs): digest, refs and version of the published image.
 name: Image
 
 on:
   workflow_call:
+    outputs:
+      digest:
+        description:
+          Digest of the published image (empty for a pull request from a fork)
+        value: ${{ jobs.publish.outputs.digest }}
+      refs:
+        description: Published references, space separated
+        value: ${{ jobs.plan.outputs.refs }}
+      version:
+        description: Version label of the image (X.Y.Z-rc.N or short commit)
+        value: ${{ jobs.plan.outputs.version }}
 
 permissions:
   contents: read
@@ -172,6 +184,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.tag.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -183,6 +197,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Tags (same digest, no rebuild)
+        id: tag
         env:
           PROD_IMAGE: ${{ needs.build.outputs.prod }}
           TARGETS: ${{ needs.plan.outputs.refs }}

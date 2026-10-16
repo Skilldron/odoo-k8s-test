@@ -22,15 +22,15 @@ Image      image.yml     plan ─► base ─► build ─┬─► tests ─┐
 Promotion  promote.yml   tag vX.Y.Z : dernière X.Y.Z-rc.N ─► X.Y.Z
 ```
 
-| Job       | Rôle                                                                                        |
-| --------- | ------------------------------------------------------------------------------------------- |
-| `plan`    | Tags à publier selon l'événement ; refuse une `release/` ou `hotfix/` qui n'est pas `X.Y.Z` |
-| `base`    | Publie `base:<clé>` si elle n'existe pas encore (environ une fois par semaine)              |
-| `build`   | Construit uniquement les modules sur `base:<clé>`, pousse `builds:run-<id>` (+ `-test`)     |
-| `tests`   | Tests des modules de `addons/` + couverture, sur l'image tirée du registre                  |
-| `smoke`   | Image prod en lecture seule, sans capacités : `/web/health`, `/web/login`, uid non root     |
-| `publish` | Après tests **et** smoke test : pose les tags lisibles (même digest, sans rebuild)          |
-| `promote` | Sur un tag git : promotion de la dernière release candidate                                 |
+| Job       | Rôle                                                                                                 |
+| --------- | ---------------------------------------------------------------------------------------------------- |
+| `plan`    | Tags à publier selon l'événement ; refuse une `release/` ou `hotfix/` qui n'est pas `X.Y.Z`          |
+| `base`    | Publie `base:<clé>` si elle n'existe pas encore (environ une fois par semaine)                       |
+| `build`   | Construit uniquement les modules sur `base:<clé>`, pousse `builds:run-<id>` (+ `-test`)              |
+| `tests`   | Tests des modules de `addons/` + couverture, sur l'image tirée du registre                           |
+| `smoke`   | Image prod en lecture seule, sans capacités : `/web/health`, `/web/login`, uid non root              |
+| `publish` | Après tests **et** smoke test : pose les tags lisibles (même digest, sans rebuild) ; sortie `digest` |
+| `promote` | Sur un tag git : promotion de la dernière release candidate ; sortie `digest`                        |
 
 Autres workflows :
 
@@ -206,14 +206,25 @@ IMAGE=ghcr.io/<org>/<dépôt>@sha256:<digest>
 ENV=(-e PGHOST=db.interne -e PGUSER=odoo -e PGPASSWORD=… -e PGDATABASE=prod
      -e ODOO_ADMIN_PASSWD=… -e ODOO_WORKERS=4)
 
-# 1. Mise à jour des modules (à chaque nouvelle version)
-docker run --rm "${ENV[@]}" -v odoo-data:/var/lib/odoo "$IMAGE" \
-    odoo -u all --stop-after-init --no-http
+# 1. Modules, Odoo arrêté
+RUN=(docker run --rm "${ENV[@]}" -v odoo-data:/var/lib/odoo "$IMAGE")
+#    première installation : modules du projet, puis référence des empreintes
+"${RUN[@]}" odoo -i <modules> --stop-after-init --no-http
+"${RUN[@]}" click-odoo-update --only-compute-hashes
+#    nouvelle version : seuls les modules modifiés sont mis à jour
+"${RUN[@]}" click-odoo-update
 # 2. Démarrage, durci
 docker run -d --name odoo "${ENV[@]}" -v odoo-data:/var/lib/odoo -p 8069:8069 -p 8072:8072 \
     --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
     --restart unless-stopped "$IMAGE"
 ```
+
+Mise à jour des modules : `click-odoo-update` (paquet `click-odoo-contrib`, dans
+l'image) compare l'empreinte de chaque module à celle stockée en base et ne met à jour
+que les modules modifiés, y compris les modules Odoo et OCA après une nouvelle image de
+base (`--update-all` force une mise à jour complète). Arrêter Odoo pendant la mise à
+jour et sauvegarder juste avant : Odoo enregistre chaque module mis à jour au fur et à
+mesure, une mise à jour en échec laisse la base à moitié migrée.
 
 Points à prévoir : `/var/lib/odoo` (filestore) sur un volume persistant et sauvegardé
 avec la base ; le port `8072` (websocket) derrière le même reverse proxy que `8069` ;

@@ -6,6 +6,10 @@
 # ------------ External dependencies ------------
 # E.g.: phonenumbers==8.13.55
 
+# ------------ Deployment ------------
+# click-odoo-update: on deploy, updates only the addons whose checksum changed
+click-odoo-contrib==1.24
+
 # ------------ OCA modules ------------
 # OCA modules are in odoo.addons namespace and automatically found.
 #

@@ -1,10 +1,18 @@
 # Promotion group (called by ci.yml on a tag vX.Y.Z): the last release candidate
 # X.Y.Z-rc.N becomes X.Y.Z, same digest, no rebuild, refused when the tagged sources differ
 # from the candidate's (see ci/image-promote.sh). The only promotion of the pipeline.
+# Outputs (deployment jobs): digest and version of the promoted image.
 name: Promotion
 
 on:
   workflow_call:
+    outputs:
+      digest:
+        description: Digest of the promoted image (same as the release candidate)
+        value: ${{ jobs.promote.outputs.digest }}
+      version:
+        description: Promoted version (X.Y.Z)
+        value: ${{ jobs.promote.outputs.version }}
 
 permissions:
   contents: read
@@ -16,6 +24,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.promote.outputs.digest }}
+      version: ${{ steps.promote.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,9 +38,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Last release candidate -> X.Y.Z
+        id: promote
         env:
           REPOSITORY: ${{ github.repository }}
           REF_NAME: ${{ github.ref_name }}
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: IMAGE="ghcr.io/${REPOSITORY,,}" ci/image-promote.sh "${REF_NAME#v}"
+        run: |
+          echo "version=${REF_NAME#v}" >>"$GITHUB_OUTPUT"
+          IMAGE="ghcr.io/${REPOSITORY,,}" ci/image-promote.sh "${REF_NAME#v}"
