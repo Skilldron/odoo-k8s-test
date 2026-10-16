@@ -338,7 +338,7 @@ Un seul chart `odoo` pour les trois environnements, conforme à `kubernetes-patt
 | `pvc.yaml`                                      | `/var/lib/odoo` (filestore, sessions) : `odoo-data-<g>`, créé depuis un `VolumeSnapshot` au rollback ; `helm.sh/resource-policy: keep` hors review         |
 | `postgres.yaml`                                 | Review : PostgreSQL 18 éphémère (Deployment, Service, volume monté sur `/var/lib/postgresql`)                                                              |
 | `cnpg.yaml`                                     | Recette et prod : `Cluster` `<release>-pg-<g>` (PG 18, `keep`), `ScheduledBackup`, `ObjectStore` Barman Cloud ; bootstrap depuis les snapshots au rollback |
-| `configmap-config.yaml`                         | Modèle d'`odoo.conf` construit depuis `odoo.config` (§6.1)                                                                                                 |
+| `configmap-config.yaml`                         | `odoo.conf` complet généré depuis `odoo.config`, sans secret (§6.1)                                                                                        |
 | `secrets.yaml`                                  | Review : mots de passe générés une fois, conservés via `lookup`                                                                                            |
 | `networkpolicy.yaml`                            | Odoo joignable depuis la Gateway seulement ; PostgreSQL depuis l'Odoo de la release seulement                                                              |
 | `serviceaccount.yaml`, `configmap-prepare.yaml` | Compte sans jeton ; script `prepare`                                                                                                                       |
@@ -347,7 +347,7 @@ Un seul chart `odoo` pour les trois environnements, conforme à `kubernetes-patt
 
 - image et digest ;
 - `odoo.config` : sections et options d'`odoo.conf` (§6.1) ;
-- `secrets` : nom du Secret applicatif et de ses clés ;
+- `secrets` : nom du Secret applicatif, et variables `secrets.env` des modules ;
 - modules à installer (par défaut tout `addons/`) et démo ;
 - mode de `prepare` : `reset` ou `upgrade` ;
 - base : `ephemeral`, `cnpg` ou `external` ;
@@ -361,14 +361,15 @@ génération lors d'un rollback. L'hôte d'une review est déduit du nom de la r
 
 ### 6.1 Configuration d'Odoo et secrets
 
-Le chart produit `odoo.conf`, pas la CI. Les réglages sont dans le dépôt et les secrets
+Le chart génère `odoo.conf`, pas la CI. Les réglages sont dans le dépôt et les secrets
 dans le cluster. On peut donc confier les secrets à un outil dédié sans modifier la CI
-ni le chart.
+ni le chart. Le pod ne fait aucun rendu au démarrage : Odoo 20 lit lui-même ses secrets
+dans l'environnement.
 
-- **Réglages.** `odoo.config` décrit le fichier **section par section** : chaque clé est
-  une section INI, et sa valeur est la liste libre des options de cette section.
-  `values.yaml` porte les valeurs par défaut, et chaque environnement les surcharge (les
-  maps Helm fusionnent section par section).
+- **Fichier généré par Helm.** `odoo.config` décrit le fichier **section par section** :
+  chaque clé est une section INI, et sa valeur est la liste libre des options de cette
+  section. `values.yaml` porte les valeurs par défaut, et chaque environnement les
+  surcharge (les maps Helm fusionnent section par section).
 
   ```yaml
   odoo:
@@ -380,7 +381,7 @@ ni le chart.
         channels: [root:2, root.channel1:1]
   ```
 
-  donne :
+  donne, dans la ConfigMap `<release>-config` :
 
   ```ini
   [options]
@@ -398,39 +399,41 @@ ni le chart.
   - Odoo 20 ne lit que `[options]` : `config.misc` n'existe plus. Les modules qui ont
     leur propre section relisent le fichier eux-mêmes. Par exemple, queue_job (19.0 et
     20.0) ouvre `config["config"]` avec `ConfigParser(interpolation=None)` pour lire
-    `[queue_job]`, et ses variables `ODOO_QUEUE_JOB_*` passent avant. Le chart écrit
-    donc les sections telles quelles, sans les valider.
+    `[queue_job]`. Le chart écrit donc toutes les sections telles quelles, sans les
+    valider.
   - Le chart impose dans `[options]` ce qui ne se règle pas : `addons_path`, `data_dir`,
-    `http_interface`, `db_name` et `dbfilter`.
+    `http_interface`, `db_name` et `dbfilter` (nom de la base tiré des valeurs).
+  - Le fichier est monté en lecture seule sur `/etc/odoo/odoo.conf`, avec
+    `ODOO_RC=/etc/odoo/odoo.conf`. L'entrypoint de l'image ne rend alors rien (cas «
+    configuration fournie » existant), et l'image ne change pas.
   - `values.schema.json` : noms de section et d'option en `[a-z0-9_.]`, valeurs
-    scalaires ou listes de scalaires, sans retour à la ligne. Dans toutes les sections,
-    une option dont le nom contient `passw`, `secret` ou `token` doit valoir un
-    placeholder `${VAR}`. Ainsi, aucun secret ne finit en clair dans le dépôt.
+    scalaires ou listes de scalaires, sans retour à la ligne. Une option dont le nom
+    contient `passw`, `secret` ou `token` est refusée dans toutes les sections : aucun
+    secret ne finit dans le dépôt ni dans la ConfigMap.
 
-- **Modèle.** La ConfigMap `<release>-config` contient le modèle d'`odoo.conf`. Les
-  secrets y restent sous forme de placeholders :
-  - imposés par le chart : `admin_passwd = ${ODOO_ADMIN_PASSWD}` et
-    `smtp_password = ${ODOO_SMTP_PASSWORD:-}` ;
-  - ou ajoutés dans `odoo.config`, dans n'importe quelle section, par exemple
-    `[queue_job]` `http_auth_password: ${QUEUE_JOB_HTTP_PASSWORD}` ;
-  - un `${…}` est toujours remplacé au rendu. Une valeur littérale ne peut donc pas en
-    contenir, et c'est documenté.
-- **Rendu au démarrage du pod**, par l'entrypoint de l'image, sans changement d'image :
-  - la ConfigMap est montée en lecture seule, et `ODOO_CONFIG_TEMPLATE` pointe dessus ;
-  - `docker/render-config.py` remplit le modèle et écrit `/tmp/odoo.conf` (`emptyDir`),
-    avec les droits `0600` ;
-  - il s'arrête en erreur si une variable requise manque ;
-  - même chose pour l'init container `prepare`.
-- **Secrets**, injectés en variables d'environnement (`secretKeyRef`) :
-  - le Secret applicatif nommé dans `secrets.existingSecret`, avec les clés
-    `admin-passwd` et `smtp-password` (optionnelle) ;
-  - les placeholders ajoutés dans `odoo.config`, via `secrets.extraEnv`
-    (`{name: QUEUE_JOB_HTTP_PASSWORD, secret: …, key: …}`). `ci/deploy.sh` vérifie aussi
-    ces clés (§3.2) ;
-  - la base, depuis le secret `<cluster>-app` de CNPG (`host`, `port`, `username`,
-    `password`, `dbname` vers les variables `PG*`), ou depuis un Secret nommé en mode
-    `external` ;
-  - en review, les deux Secrets sont générés par le chart (`secrets.yaml`).
+- **Secrets en variables d'environnement** (`secretKeyRef`), lues nativement par
+  Odoo 20. Chaque option du fichier a une variable `ODOO_<OPTION>`, et l'environnement
+  passe avant le fichier. Vérifié dans l'image : `config.py` l.136, et un test avec
+  `ODOO_WORKERS=5` qui l'emporte sur `workers = 3`.
+  - `ODOO_ADMIN_PASSWD` et `ODOO_SMTP_PASSWORD` (optionnelle) depuis le Secret
+    applicatif nommé dans `secrets.existingSecret` (clés `admin-passwd` et
+    `smtp-password`) ;
+  - `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` et `PGDATABASE` depuis le secret
+    `<cluster>-app` de CNPG, ou depuis un Secret nommé en mode `external`. L'entrypoint
+    officiel n'ajoute alors pas de `--db_*` ;
+  - les secrets des modules, via `secrets.env` (`{name, secret, key}`). Par exemple
+    `ODOO_QUEUE_JOB_HTTP_AUTH_PASSWORD`, que queue_job lit avant sa section.
+    `ci/deploy.sh` vérifie aussi ces clés (§3.2) ;
+  - le chart refuse qu'une option soit à la fois dans `odoo.config` et dans
+    `secrets.env`. Sinon, la variable masquerait le fichier sans que ça se voie ;
+  - en review, les Secrets sont générés par le chart (`secrets.yaml`, `randAlphaNum`
+    conservé avec `lookup`). La CI ne transmet aucun mot de passe. Elle relit les
+    identifiants dans le Secret pour le résumé du job.
+- **Limite.** Pour un module qui lit **un secret** dans sa section, sans variable
+  d'environnement de repli, ce secret devrait être écrit en clair dans le fichier, donc
+  dans le dépôt. Le schéma l'interdit. Ce cas n'existe pas aujourd'hui (queue_job a ses
+  variables) : on le traitera au cas par cas, et c'est documenté. Les réglages non
+  secrets de ces modules passent sans problème par `odoo.config`.
 - **Gestionnaire de secrets interchangeable.** Le chart a seulement besoin d'un Secret
   avec le bon nom et les bonnes clés. On peut le produire avec `kubectl create secret`,
   Sealed Secrets, SOPS ou un `ExternalSecret` (External Secrets Operator : Vault, AWS,
@@ -441,10 +444,18 @@ ni le chart.
   - quand un secret change (rotation), le pod ne redémarre pas tout seul : il faut
     `kubectl rollout restart` ou Reloader (optionnel), et c'est documenté. En recette et
     en prod, le redémarrage coupe brièvement le service (Recreate).
-- Le déploiement Docker garde les variables `ODOO_*` et le modèle de l'image (inchangé).
+- Le déploiement Docker garde les variables `ODOO_*` et le modèle de l'image, rendu par
+  `render-config.py` (inchangé).
 
-Écarté : mettre tout `odoo.conf` dans un Secret. Les réglages et les secrets seraient
-mélangés, et on ne pourrait plus confier les secrets à un outil dédié.
+Écartés :
+
+- rendre un modèle au démarrage du pod (`render-config.py`) : inutile, puisque Odoo 20
+  lit ses secrets dans l'environnement ;
+- mettre tout `odoo.conf` dans un Secret : les réglages et les secrets seraient
+  mélangés, et on ne pourrait plus confier les secrets à un outil dédié ;
+- un mot de passe de review aléatoire passé par la CI (`--set`) : le PostgreSQL de la
+  review ne fixe son mot de passe qu'à la création de son volume, et la valeur serait
+  copiée dans l'historique Helm.
 
 **`deploy/chart/files/prepare.sh`** :
 
@@ -547,9 +558,9 @@ Fichiers à appliquer une fois par cluster ou par projet. Ce sont des exemples, 
 - les commandes Odoo 20 passent par notre entrypoint avec les variables `PG*` : création
   avec démo, mot de passe admin, `-i` sur une base vide existante, `click-odoo-update`
   (référence posée à l'installation) ;
-- un modèle monté avec `ODOO_CONFIG_TEMPLATE` est bien rendu par l'entrypoint, racine en
-  lecture seule, secrets en variables d'environnement ; une section `[queue_job]` du
-  fichier rendu est lue par le jobrunner ;
+- avec un `odoo.conf` monté (`ODOO_RC`) et les secrets en variables `ODOO_*` et `PG*` :
+  `odoo`, `odoo db init`, `click-odoo-update` et le jobrunner de queue_job (section
+  `[queue_job]`, `ODOO_QUEUE_JOB_HTTP_AUTH_PASSWORD`) lisent bien leur configuration ;
 - le rendu PDF fonctionne avec la racine en lecture seule ; PostgreSQL 18 et Mailpit
   tournent en non-root (PSA `restricted`) ;
 - CNPG sur kind :
@@ -601,7 +612,7 @@ Fichiers à appliquer une fois par cluster ou par projet. Ce sont des exemples, 
 | Run de PR annulé pendant `helm upgrade`                          | `ci/deploy.sh` répare la release bloquée ; aucune annulation des déploiements                              |
 | Base managée (`external`) sans point de restauration automatique | Documenté ; CNPG par défaut                                                                                |
 | Secret changé sans redémarrage d'Odoo                            | Runbook de rotation ; Reloader en option                                                                   |
-| Secret applicatif absent ou clé manquante                        | `render-config.py` s'arrête en listant les variables manquantes ; vérifié par `ci/deploy.sh` avant l'arrêt |
+| Secret applicatif absent ou clé manquante                        | Vérifié par `ci/deploy.sh` avant l'arrêt ; sinon le pod reste en `CreateContainerConfigError`              |
 
 ## 13. Hors périmètre (v1)
 
