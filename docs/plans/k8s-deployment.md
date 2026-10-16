@@ -263,7 +263,7 @@ cités sont des exemples. `ci/deploy.sh` vérifie ces fonctions avant de déploy
 
 7. Un **CSI qui gère les `VolumeSnapshot`** : CRD `snapshot.storage.k8s.io`,
    snapshot-controller et une `VolumeSnapshotClass` (Longhorn, Rook-Ceph, CSI du
-   fournisseur cloud…).
+   fournisseur cloud…), de préférence en `deletionPolicy: Retain`.
 8. Des **StorageClasses** pour le filestore, la base et les reviews
    (`reclaimPolicy: Delete` conseillé pour les reviews). Le chart les prend par nom dans
    les valeurs.
@@ -271,8 +271,8 @@ cités sont des exemples. `ci/deploy.sh` vérifie ces fonctions avant de déploy
 
 ### PostgreSQL
 
-10. L'opérateur **CloudNativePG 1.30** et son **plugin Barman Cloud** ; la méthode de
-    sauvegarde intégrée est dépréciée.
+10. L'opérateur **CloudNativePG 1.30** et son **plugin Barman Cloud**, qui demande
+    cert-manager ; la méthode de sauvegarde intégrée est dépréciée.
 11. Un **`ObjectStore`** Barman Cloud dans chaque namespace de recette et de prod, vers
     un bucket S3 hors du cluster, avec ses identifiants. Le chart le référence par nom.
 12. Le chart crée le `Cluster` CNPG : PostgreSQL 18, rôle Odoo non superutilisateur et
@@ -348,8 +348,9 @@ restauration ni rollback automatique pour la base.
 
 24. `kubectl`, Helm 4, kind et Docker. Pour ses propres tests, `ci/chart-e2e.sh`
     installe dans kind CNPG, csi-driver-host-path, snapshot-controller, une
-    implémentation Gateway API et MinIO. Ce n'est pas une installation de référence pour
-    un cluster.
+    implémentation Gateway API et un stockage S3 (MinIO, image
+    `cgr.dev/chainguard/minio` : MinIO ne publie plus d'image). Ce n'est pas une
+    installation de référence pour un cluster.
 
 ## 5. Phase 0 — sur `20.0`
 
@@ -397,19 +398,19 @@ Un seul chart `odoo` pour les trois environnements, conforme à `kubernetes-patt
 - aucun produit d'infrastructure supposé : StorageClasses, `VolumeSnapshotClass`,
   Gateway et `ObjectStore` sont des noms dans les valeurs.
 
-| Template                | Rôle                                                                                                                                                              |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deployment.yaml`       | Odoo (sans init container), sidecar Mailpit (en option) ; `replicas` depuis `odoo.replicas`                                                                       |
-| `job-migrate.yaml`      | Job `migrate` (§6.2), rendu si `jobs.migrate.run` : init containers et conteneur avec des commandes natives, sans script                                          |
-| `configmap-config.yaml` | `odoo.conf` complet généré depuis `odoo.config`, sans secret (§6.1)                                                                                               |
-| `service.yaml`          | 8069 ; 8072 (`appProtocol: kubernetes.io/ws`) si `workers` > 0 ; 8025 (Mailpit)                                                                                   |
-| `httproute.yaml`        | Hôte Odoo (`/websocket` vers 8072 en multi-process), hôte Mailpit, filtres optionnels ; rattaché à la Gateway de l'administrateur                                 |
-| `pvc.yaml`              | `/var/lib/odoo` (filestore, sessions) : recette et prod `odoo-data-<g>` (`keep`, créé depuis un `VolumeSnapshot` au rollback) ; review `odoo-data-<digest court>` |
-| `postgres.yaml`         | Base `ephemeral` (review) : PostgreSQL 18 (Deployment, Service `<release>-postgres`, volume `pgdata-<digest court>` sur `/var/lib/postgresql`)                    |
-| `cnpg.yaml`             | Base `cnpg` : `Cluster` `<release>-pg-<g>` (PG 18, `keep`), `ScheduledBackup` vers l'`ObjectStore` nommé ; bootstrap depuis les snapshots au rollback             |
-| `secrets.yaml`          | Review : mots de passe générés une fois, conservés via `lookup`                                                                                                   |
-| `networkpolicy.yaml`    | Odoo joignable depuis la Gateway seulement ; PostgreSQL depuis les pods de la release seulement                                                                   |
-| `serviceaccount.yaml`   | Compte sans jeton                                                                                                                                                 |
+| Template                | Rôle                                                                                                                                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deployment.yaml`       | Odoo (sans init container), sidecar Mailpit (en option) ; `replicas` depuis `odoo.replicas`                                                                            |
+| `job-migrate.yaml`      | Job `migrate` (§6.2), rendu si `jobs.migrate.run` : init containers et conteneur avec des commandes natives, sans script                                               |
+| `configmap-config.yaml` | `odoo.conf` complet généré depuis `odoo.config`, sans secret (§6.1)                                                                                                    |
+| `service.yaml`          | 8069 ; 8072 (`appProtocol: kubernetes.io/ws`) si `workers` > 0 ; 8025 (Mailpit)                                                                                        |
+| `httproute.yaml`        | Hôte Odoo (`/websocket` vers 8072 en multi-process), hôte Mailpit, filtres optionnels ; rattaché à la Gateway de l'administrateur                                      |
+| `pvc.yaml`              | `/var/lib/odoo` (filestore, sessions) : recette et prod `odoo-data-<g>` (`keep`, créé depuis un `VolumeSnapshot` au rollback) ; review `odoo-data-<digest court>`      |
+| `postgres.yaml`         | Base `ephemeral` (review) : PostgreSQL 18 (Deployment, Service `<release>-postgres`, volume `pgdata-<digest court>` sur `/var/lib/postgresql`, `POSTGRES_DB=postgres`) |
+| `cnpg.yaml`             | Base `cnpg` : `Cluster` `<release>-pg-<g>` (PG 18, `keep`), `ScheduledBackup` vers l'`ObjectStore` nommé ; bootstrap depuis les snapshots au rollback                  |
+| `secrets.yaml`          | Review : mots de passe générés une fois, conservés via `lookup`                                                                                                        |
+| `networkpolicy.yaml`    | Odoo joignable depuis la Gateway seulement ; PostgreSQL depuis les pods de la release seulement                                                                        |
+| `serviceaccount.yaml`   | Compte sans jeton                                                                                                                                                      |
 
 **`values.yaml`** (avec `values.schema.json`) :
 
@@ -569,8 +570,9 @@ touche jamais la base.
 
 ### 6.3 Remise à zéro des reviews et garde-fous
 
-Le chart ne contient **aucune commande de suppression** (`dropdb`, `DROP`, `rm`), pour
-aucun environnement. La remise à zéro d'une review vient de ses volumes :
+Le chart ne contient **aucune commande de suppression** (`dropdb`, `DROP`, `rm`,
+`--force`), pour aucun environnement. La remise à zéro d'une review vient de ses volumes
+:
 
 - avec une base `ephemeral`, le volume PostgreSQL (`pgdata-<digest court>`) et celui du
   filestore (`odoo-data-<digest court>`) ont le digest dans leur nom. Une nouvelle image
@@ -586,12 +588,13 @@ Garde-fous :
   et en prod, les volumes sont nommés par génération, gardés (`keep`), et la base est un
   cluster CNPG séparé. Une valeur mal placée fait échouer le lint et le déploiement,
   avant toute action.
-- **À l'exécution.** `odoo db init` refuse une base existante : même mal configuré, il
-  ne peut rien écraser.
+- **À l'exécution.** `odoo db init` refuse une base existante (« exists, aborting ») :
+  même mal configuré, il ne peut rien écraser. Seul `--force` supprimerait la base ; le
+  lint l'interdit.
 - **Par les droits.** Les comptes de déploiement sont propres à chaque namespace : le
   job `review` de la CI ne peut rien faire dans celui de la prod.
 - **Par les tests.** `ci/chart-lint.sh` vérifie que :
-  - aucun rendu ne contient `dropdb`, `DROP DATABASE` ni `rm` ;
+  - aucun rendu ne contient `dropdb`, `DROP DATABASE`, `rm` ni `--force` ;
   - les rendus de `recette.yaml` et `production.yaml` n'ont ni étape `db-init` ni volume
     nommé par digest, et échouent avec `database.type=ephemeral`.
 
@@ -693,6 +696,34 @@ manifeste ni script.
   - archivage des WAL d'une nouvelle génération ;
 - un volume créé depuis un `VolumeSnapshot`. La durée de restauration se mesure sur le
   stockage du vrai cluster, en phase 6.
+
+**Phase 1, résultats (2026-10-16).** Tout passe. Essais sur l'image prod de `20.0`
+(`9f68b4b`), Docker puis kind v0.33 (Kubernetes 1.37) avec CNPG 1.30.1, plugin Barman
+Cloud 0.15.1, cert-manager 1.21, external-snapshotter 8.6, csi-driver-host-path 1.18 et
+Mailpit 1.31.4.
+
+| Essai                                     | Résultat                                                                                                                                                                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| queue_job, `odoo.conf` monté (`ODOO_RC`)  | `channels` et `http_auth_user` lus dans `[queue_job]`, mot de passe lu dans `ODOO_QUEUE_JOB_HTTP_AUTH_PASSWORD` ; jobrunner démarré (`workers = 2`) ; job exécuté sur `root.channel1` |
+| `$(VAR)` dans les arguments du Job        | La spec garde `$(ODOO_REVIEW_ADMIN_PASSWORD)` ; connexion `admin` avec le mot de passe du Secret, `admin`/`admin` refusé                                                              |
+| Job `migrate` (`db init`, `-i`, update)   | Les trois étapes passent en PSA `restricted`, racine en lecture seule                                                                                                                 |
+| `db init` sur une base existante          | Refus, code 1 ; `--force` supprimerait la base : ajouté au lint (§6.3)                                                                                                                |
+| PDF, racine en lecture seule              | `%PDF`, en Docker et dans le pod                                                                                                                                                      |
+| PostgreSQL 18 et Mailpit non-root         | PSA `restricted`, racine en lecture seule (`emptyDir` sur `/var/run/postgresql` et `/tmp`) ; mail envoyé via `smtp_server` de `odoo.conf`, visible dans Mailpit                       |
+| CNPG, sauvegarde `volumeSnapshot` à froid | 31 s ; le `VolumeSnapshot` n'a pas d'`ownerReference` : lui et le `Backup` survivent à la suppression du `Cluster`                                                                    |
+| Restauration en génération 2              | 30 s ; données exactement celles du snapshot ; archivage des WAL actif sous le nouveau `serverName`                                                                                   |
+| Filestore depuis un `VolumeSnapshot`      | Odoo à 0, snapshot, PVC créé depuis le snapshot : 116 fichiers sur 116, Odoo répond                                                                                                   |
+
+Constats pour la suite :
+
+- **queue_job n'est pas encore publié pour 20.0.** La branche `20.0` d'OCA/queue le
+  marque non installable ; l'essai a utilisé la PR de migration OCA/queue#999
+  (`2b08ccd`). Il dépend aussi d'`openupgradelib`, absent de l'image : c'est au projet
+  qui l'utilise de l'ajouter à ses dépendances.
+- Le chart pose `POSTGRES_DB=postgres` pour la base éphémère, sinon l'image crée la base
+  d'Odoo et `db init` refuse ; la sonde `pg_isready` vise `-d postgres`.
+- Les ancres YAML ne traversent pas `---` : sans importance pour Helm, à noter pour les
+  exemples.
 
 **Phase 2, scénarios de `ci/chart-e2e.sh` :**
 
