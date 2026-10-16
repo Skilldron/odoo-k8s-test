@@ -47,7 +47,7 @@ Hors VS Code : `docker compose up -d` puis `docker compose exec odoo odoo -d odo
 addons/          addons du projet (dev_sample = module d'exemple, supprimable)
 vendor/          modules achetés (Odoo Apps Store), tels quels
 ci/              scripts de la CI, exécutables en local
-docker/          Dockerfile multi-stage, conf de dev, template de conf et entrypoint de prod
+docker/          Dockerfile multi-stage, conf de dev, conf et entrypoint de prod
 docs/            CI et image de prod, modèle de branches, plans
 requirements.txt        dépendances Python des addons et modules OCA
 requirements-dev.txt    outillage développeur (image dev uniquement)

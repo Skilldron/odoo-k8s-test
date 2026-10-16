@@ -101,11 +101,11 @@ LABEL org.opencontainers.image.title="odoo" \
 
 COPY --chown=odoo:odoo addons /opt/odoo/addons
 COPY --chown=odoo:odoo vendor /opt/odoo/vendor
-COPY docker/odoo.conf.template docker/render-config.py docker/entrypoint.sh /opt/odoo/
+COPY docker/odoo.conf docker/entrypoint.sh /opt/odoo/
 
-# Rendered in /tmp: works with a read-only root filesystem (tmpfs on /tmp)
-ENV ODOO_RC=/tmp/odoo.conf \
-    ODOO_CONFIG_TEMPLATE=/opt/odoo/odoo.conf.template
+# Static, without secret: secrets and overrides come from the environment (ODOO_<OPTION>,
+# PG*), read by Odoo itself; another file can be mounted and ODOO_RC pointed to it
+ENV ODOO_RC=/opt/odoo/odoo.conf
 
 USER odoo
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \

@@ -157,17 +157,27 @@ ci/image-promote.sh 1.0.0          # depuis le commit construit
 | `test`    | `prod` + `coverage`, uniquement pour la CI                                                     |
 
 L'image `prod` suit `docker-patterns` : base figée par digest, utilisateur non root,
-aucun secret dans les couches, compatible `--read-only` (configuration rendue dans
-`/tmp`), `HEALTHCHECK` sur `/web/health`. Labels : `org.opencontainers.image.version`,
-`org.opencontainers.image.revision`, `odoo.template.tree`, `odoo.version`.
+aucun secret dans les couches, compatible `--read-only` (configuration statique, rien
+n'est écrit au démarrage), `HEALTHCHECK` sur `/web/health`. Labels :
+`org.opencontainers.image.version`, `org.opencontainers.image.revision`,
+`odoo.template.tree`, `odoo.version`.
 
 ## Configuration par environnement
 
-La même image sert tous les environnements ; seule la configuration change. Au
-démarrage, `docker/entrypoint.sh` rend `docker/odoo.conf.template` dans `/tmp/odoo.conf`
-à partir des variables d'environnement, puis passe la main à l'entrypoint officiel
-(attente de PostgreSQL). Une variable requise manquante arrête le conteneur avec un
-message explicite.
+La même image sert tous les environnements ; seule la configuration change. L'image
+contient une configuration statique sans secret, `docker/odoo.conf` (`ODOO_RC`), qui ne
+fixe que ce qui diffère des défauts d'Odoo. Le reste vient de l'environnement, lu par
+Odoo 20 lui-même avant le fichier :
+
+- chaque option du fichier a sa variable `ODOO_<OPTION>` (en majuscules), par exemple
+  `ODOO_WORKERS` pour `workers` ;
+- la base vient des variables `PG*`.
+
+Rien n'est rendu au démarrage. `docker/entrypoint.sh` vérifie seulement les variables
+requises, arrête le conteneur avec un message explicite s'il en manque une, puis passe
+la main à l'entrypoint officiel (attente de PostgreSQL).
+
+Variables courantes :
 
 | Variable                 | Requise | Défaut       | Option Odoo              |
 | ------------------------ | ------- | ------------ | ------------------------ |
@@ -175,7 +185,7 @@ message explicite.
 | `PGPORT`                 | non     | `5432`       | `db_port`                |
 | `PGUSER`                 | oui     | —            | `db_user`                |
 | `PGPASSWORD`             | oui     | —            | `db_password` (secret)   |
-| `PGDATABASE`             | oui     | —            | `db_name`, `dbfilter`    |
+| `PGDATABASE`             | oui     | —            | `db_name` (seule base)   |
 | `ODOO_ADMIN_PASSWD`      | oui     | —            | `admin_passwd` (secret)  |
 | `ODOO_WORKERS`           | non     | `2`          | `workers`                |
 | `ODOO_MAX_CRON_THREADS`  | non     | `1`          | `max_cron_threads`       |
@@ -193,9 +203,13 @@ message explicite.
 | `ODOO_EMAIL_FROM`        | non     | vide         | `email_from`             |
 | `ODOO_LOG_LEVEL`         | non     | `info`       | `log_level`              |
 
-**Configuration complète à la main** : monter son propre fichier et pointer `ODOO_RC`
-dessus (`-e ODOO_RC=/etc/odoo/odoo.conf -v ./odoo.conf:/etc/odoo/odoo.conf:ro`) ; rien
-n'est alors rendu.
+Sans `dbfilter`, Odoo ne sert que la base `db_name`. Les défauts viennent de
+`docker/odoo.conf`, ou d'Odoo lui-même pour le SMTP et `log_level`.
+
+**Autre fichier de configuration** : monter son propre fichier et pointer `ODOO_RC`
+dessus (`-e ODOO_RC=/etc/odoo/odoo.conf -v ./odoo.conf:/etc/odoo/odoo.conf:ro`), par
+exemple pour les sections de modules (`[queue_job]`). Les secrets restent dans
+l'environnement : le fichier n'en contient aucun, et les variables requises le restent.
 
 ## Déployer soi-même
 
