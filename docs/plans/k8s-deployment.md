@@ -317,6 +317,21 @@ Vérification :
 - `click-odoo-update` sur une base de test : le premier passage pose la référence, le
   deuxième ne fait rien, et un module modifié est le seul mis à jour.
 
+## 5 bis. Phase 0 bis — sur `20.0`
+
+Plus de rendu de configuration au démarrage, Docker comme Kubernetes :
+
+- suppression de `docker/render-config.py` et `docker/odoo.conf.template` ;
+- `docker/odoo.conf` statique, sans secret (`ODOO_RC`), avec seulement ce qui diffère
+  des défauts d'Odoo ;
+- `docker/entrypoint.sh` : garde shell sur `ODOO_ADMIN_PASSWD` et les variables `PG*`,
+  puis l'entrypoint officiel ;
+- `docs/ci.md` : même contrat de variables, plus la règle `ODOO_<OPTION>`.
+
+Vérification : image construite en local, `run-tests.sh`, `smoke.sh`, configuration lue
+par Odoo (défauts du fichier, surcharge `ODOO_WORKERS`, secrets), arrêt si une variable
+manque, `click-odoo-update` via l'entrypoint avec la racine en lecture seule.
+
 ## 6. Chart Helm — `deploy/chart/`
 
 Un seul chart `odoo` pour les trois environnements, conforme à `kubernetes-patterns` :
@@ -401,11 +416,12 @@ dans l'environnement.
     20.0) ouvre `config["config"]` avec `ConfigParser(interpolation=None)` pour lire
     `[queue_job]`. Le chart écrit donc toutes les sections telles quelles, sans les
     valider.
-  - Le chart impose dans `[options]` ce qui ne se règle pas : `addons_path`, `data_dir`,
-    `http_interface`, `db_name` et `dbfilter` (nom de la base tiré des valeurs).
+  - Le chart impose dans `[options]` ce qui ne se règle pas : `addons_path`, `data_dir`
+    et `http_interface`. `db_name` vient de `PGDATABASE`, et sans `dbfilter` Odoo ne
+    sert que cette base.
   - Le fichier est monté en lecture seule sur `/etc/odoo/odoo.conf`, avec
-    `ODOO_RC=/etc/odoo/odoo.conf`. L'entrypoint de l'image ne rend alors rien (cas «
-    configuration fournie » existant), et l'image ne change pas.
+    `ODOO_RC=/etc/odoo/odoo.conf`, à la place du `docker/odoo.conf` statique de l'image.
+    L'entrypoint de l'image ne fait que vérifier les variables requises (phase 0 bis).
   - `values.schema.json` : noms de section et d'option en `[a-z0-9_.]`, valeurs
     scalaires ou listes de scalaires, sans retour à la ligne. Une option dont le nom
     contient `passw`, `secret` ou `token` est refusée dans toutes les sections : aucun
@@ -444,13 +460,13 @@ dans l'environnement.
   - quand un secret change (rotation), le pod ne redémarre pas tout seul : il faut
     `kubectl rollout restart` ou Reloader (optionnel), et c'est documenté. En recette et
     en prod, le redémarrage coupe brièvement le service (Recreate).
-- Le déploiement Docker garde les variables `ODOO_*` et le modèle de l'image, rendu par
-  `render-config.py` (inchangé).
+- Le déploiement Docker utilise le même mécanisme : `docker/odoo.conf` statique et
+  variables d'environnement (phase 0 bis).
 
 Écartés :
 
-- rendre un modèle au démarrage du pod (`render-config.py`) : inutile, puisque Odoo 20
-  lit ses secrets dans l'environnement ;
+- rendre un modèle au démarrage du pod : inutile, puisque Odoo 20 lit ses secrets dans
+  l'environnement. `render-config.py` est supprimé de `20.0` (phase 0 bis) ;
 - mettre tout `odoo.conf` dans un Secret : les réglages et les secrets seraient
   mélangés, et on ne pourrait plus confier les secrets à un outil dédié ;
 - un mot de passe de review aléatoire passé par la CI (`--set`) : le PostgreSQL de la
@@ -469,8 +485,7 @@ dans l'environnement.
 
 Il s'arrête en erreur au moindre échec (aucun `|| true`).
 
-L'image et le Dockerfile ne changent pas, à part l'ajout de `click-odoo-contrib` en
-phase 0.
+L'image ne change pas pour Kubernetes, en dehors des phases 0 et 0 bis.
 
 ## 7. Scripts `ci/`
 
@@ -546,6 +561,7 @@ Fichiers à appliquer une fois par cluster ou par projet. Ce sont des exemples, 
 | Phase | Contenu                | Vérification                                                     |
 | ----- | ---------------------- | ---------------------------------------------------------------- |
 | 0     | §5, sur `20.0`         | Voir §5                                                          |
+| 0 bis | §5 bis, sur `20.0`     | Voir §5 bis                                                      |
 | 1     | Essais, avant le chart | Voir ci-dessous                                                  |
 | 2     | Chart et `prepare.sh`  | `ci/chart-lint.sh` ; scénarios de `ci/chart-e2e.sh` ci-dessous   |
 | 3     | Scripts `ci/`          | shellcheck ; exécution contre kind ; sweep sur une liste factice |
