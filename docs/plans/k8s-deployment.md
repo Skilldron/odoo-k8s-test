@@ -15,17 +15,26 @@ Décisions prises avec l'utilisateur (2026-10-16) :
 - recette et prod : **coupure courte** pendant la mise à jour, sans ancien pod en
   parallèle ; modules mis à jour par **`click-odoo-update`** (modules modifiés
   seulement) ;
+- **le chart définit le déploiement** : Odoo démarre à 0 replica, un **Job** prépare la
+  base (initialisation ou mise à jour), puis Odoo passe à 1 replica. Le pod Odoo ne
+  touche jamais au schéma de la base (§3, §6.2) ;
+- **remise à zéro de la base réservée aux reviews** : un Job distinct, que le chart ne
+  rend qu'avec une base qu'il crée lui-même (PostgreSQL éphémère) et refuse en
+  production, au rendu comme à l'exécution (§6.3) ;
 - **point de restauration** avant chaque déploiement (snapshots à froid de la base et du
-  filestore), **rollback automatique** si le déploiement échoue, sauvegardes nocturnes
-  **hors cluster** ;
-- stockage avec snapshots CSI, **Longhorn** en référence ; PostgreSQL par **CNPG** ;
-- **`odoo.conf` produit par le chart** au démarrage du pod : réglages dans une
-  ConfigMap, secrets dans des Secrets du cluster référencés par nom. La CI ne transmet
-  que l'image ; la gestion des secrets peut passer à un outil dédié (External Secrets,
-  Sealed Secrets, SOPS…) sans toucher à la CI ni au chart (§6.1) ;
+  filestore), **rollback automatique** si le déploiement échoue ;
+- **`odoo.conf` généré par le chart** (ConfigMap, sans secret) ; secrets dans des
+  Secrets du cluster, lus nativement par Odoo 20 en variables d'environnement. La CI ne
+  transmet que l'image (§6.1) ;
+- **neutralisation** seulement quand une copie de la prod arrive en recette
+  (rafraîchissement, runbook) ; jamais pendant un déploiement ;
+- **le modèle exige des fonctions du cluster, il n'installe rien** : Gateway API, CSI
+  avec snapshots, CNPG… sont des pré-requis installés par les administrateurs, avec les
+  produits de leur choix (§4) ;
 - pas d'environnement `testing` (`develop`) pour l'instant ;
-- **phase 0 sur `20.0`** : digest publié en sortie de la CI, `click-odoo-contrib` dans
-  l'image.
+- **phases 0 et 0 bis sur `20.0`** : digest publié en sortie de la CI,
+  `click-odoo-contrib` dans l'image, configuration statique de l'image sans rendu au
+  démarrage.
 
 ## 1. Outillage retenu
 
@@ -41,18 +50,18 @@ Décisions prises avec l'utilisateur (2026-10-16) :
 
 ```
 PR interne non draft ─► quality ─► image (builds:pr-<n>) ─► review
-    1er déploiement : helm install pr-<n> (namespace <projet>-review)
-    image suivante  : helm upgrade ; prepare remet la base à zéro (démo + addons/)
-    https://<projet>-pr-<n>.<REVIEW_DOMAIN>
+    helm upgrade --install pr-<n> (namespace <projet>-review), Odoo à 0
+    Job reset : base supprimée, recréée avec la démo + modules de addons/
+    Odoo à 1 ─► https://<projet>-pr-<n>.<domaine des reviews>
 PR fermée ─► cleanup : helm uninstall pr-<n>, suppression de builds:pr-<n>
 Chaque nuit ─► sweep : review apps de PR fermées restantes
 
 push release/X.Y.Z | hotfix/X.Y.Z ─► quality ─► image (X.Y.Z-rc.N) ─► recette
 tag vX.Y.Z ─► promote (dernière rc ─► X.Y.Z, même digest) ─► production
-    1. Odoo à 0 replica                                            ┐
-    2. point de restauration : base (CNPG, à froid) + filestore    │ coupure
-    3. helm upgrade : prepare ─► click-odoo-update                 │
-    4. démarrage, smoke HTTPS                                      ┘
+    1. helm upgrade, Odoo à 0 replica                               ┐
+    2. point de restauration : base (CNPG, à froid) + filestore     │ coupure
+    3. Job migrate : -i (base vide) ou click-odoo-update            │
+    4. Odoo à 1 replica, smoke HTTPS                                ┘
     échec en 3 ou 4 ─► rollback automatique (point de restauration + digest précédent)
 ```
 
@@ -64,7 +73,8 @@ tag vX.Y.Z ─► promote (dernière rc ─► X.Y.Z, même digest) ─► produ
 | Namespace            | `<projet>-review` (toutes les PR)             | `<projet>-recette`                                      | `<projet>-prod`                 |
 | Release Helm         | `pr-<n>`                                      | `odoo`                                                  | `odoo`                          |
 | Image                | `…/builds@sha256:…`                           | `…@sha256:…` (la rc)                                    | même digest que la rc           |
-| PostgreSQL 18        | éphémère, dans la release                     | CNPG                                                    | CNPG                            |
+| PostgreSQL 18        | éphémère, créé par le chart                   | CNPG                                                    | CNPG                            |
+| Job de déploiement   | `reset`                                       | `migrate`                                               | `migrate`                       |
 | Données              | remises à zéro à chaque nouvelle image        | conservées                                              | conservées                      |
 | Odoo                 | threadé (`workers=0`), Mailpit                | `workers=2`, Mailpit                                    | workers dimensionnés, vrai SMTP |
 
@@ -75,26 +85,29 @@ tag vX.Y.Z ─► promote (dernière rc ─► X.Y.Z, même digest) ─► produ
 - **Contenu.** Une release `pr-<n>` par PR, dans le namespace partagé `<projet>-review`,
   avec :
   - Odoo, plus Mailpit en sidecar ;
-  - un PostgreSQL 18 éphémère avec son volume ;
+  - un PostgreSQL 18 éphémère, créé par le chart, avec son volume ;
   - un volume `/var/lib/odoo` ;
   - des secrets générés une fois et conservés (mot de passe PostgreSQL, mot de passe
     maître, mot de passe admin) ;
   - les HTTPRoute d'Odoo et de Mailpit, et une NetworkPolicy.
-- **Remise à zéro à chaque nouvelle image.** L'init container `prepare` compare le
-  digest de l'image au marqueur stocké en base (`ir_config_parameter`). S'il diffère :
+- **Remise à zéro à chaque nouvelle image.** `ci/deploy.sh` (§3.2) passe Odoo à 0, puis
+  lance le Job `reset` (§6.3) :
   1. suppression de la base et de son filestore ;
-  2. création avec la démo (`--with-demo`) et installation des modules de `addons/` ;
-  3. mot de passe admin, puis marqueur.
+  2. création avec la démo et installation des modules de `addons/` ;
+  3. mot de passe admin.
 
   Un champ supprimé ou renommé ne peut donc pas empêcher Odoo de démarrer, et chaque
   push revalide l'installation complète.
 
-- **Redémarrage sans nouvelle image** (nœud drainé, crash). Le marqueur est identique,
-  rien n'est réinitialisé : les saisies des testeurs restent jusqu'au push suivant.
+- **Redémarrage sans nouvelle image** (nœud drainé, crash). Seul le pod Odoo redémarre :
+  aucun Job ne tourne, rien n'est réinitialisé. Les saisies des testeurs restent
+  jusqu'au push suivant.
+- **Pas de neutralisation** : la base vient de la démo, et le serveur mail factice de la
+  neutralisation empêcherait les mails d'arriver dans Mailpit.
 - **Accès.**
-  - Adresse : `https://<projet>-pr-<n>.<REVIEW_DOMAIN>`.
-  - Identifiants (admin et mot de passe aléatoire de la PR) dans le résumé du job, le
-    dépôt étant privé.
+  - Adresse : `https://<projet>-pr-<n>.<domaine des reviews>`.
+  - Identifiants (admin et mot de passe aléatoire de la PR) dans le résumé du job, relus
+    dans le Secret de la release, le dépôt étant privé.
   - Filtre d'accès optionnel à la Gateway : liste d'IP ou basic auth, selon
     l'implémentation.
 - **PR concernées.**
@@ -103,40 +116,52 @@ tag vX.Y.Z ─► promote (dernière rc ─► X.Y.Z, même digest) ─► produ
   - Pas les branches `release/*` et `hotfix/*`, qui ont déjà la recette.
   - Au-delà de `REVIEW_MAX_APPS` (5) review apps, toute nouvelle review app est refusée
     avec un message explicite ; les existantes continuent d'être mises à jour.
-  - Le ResourceQuota du namespace sert de filet.
+  - Le ResourceQuota du namespace, s'il existe, sert de filet.
 - **Fin.**
   - Fermeture ou fusion de la PR : `helm uninstall pr-<n>`, qui supprime tout, volumes
     compris.
   - Le sweep nocturne rattrape les oublis.
 
-### 3.2 Recette et prod : déploiement
+### 3.2 Déploiement : `ci/deploy.sh`
 
-`ci/deploy.sh` enchaîne :
+Le chart décrit les étapes (valeurs `odoo.replicas`, `jobs.migrate.run`,
+`jobs.reset.run`) ; `ci/deploy.sh` les enchaîne avec le même chart et les mêmes valeurs,
+en ne changeant que ces trois réglages :
 
-1. **Vérification**, avant toute coupure : le Secret applicatif existe avec ses clés
-   (§6.1), et le rendu Helm passe (`helm upgrade --dry-run=server`).
-2. **Premier déploiement** (pas encore de release) :
-   - installation ;
-   - `prepare` initialise la base créée par CNPG (`-i` des modules de `addons/`, sans
-     démo) et pose la référence d'empreintes de `click-odoo-update` ;
-   - pas de point de restauration : il n'y a rien à protéger.
-3. **Arrêt** : Odoo passe à 0 replica, et on attend la fin des pods. La coupure
-   commence.
-4. **Point de restauration**, étiqueté avec le digest en cours et le digest visé :
+1. **Vérification**, avant toute coupure :
+   - les fonctions du cluster attendues par les valeurs sont là (CRD Gateway API et
+     CNPG, `VolumeSnapshotClass`, StorageClass, Gateway, `ObjectStore`) ;
+   - le Secret applicatif existe avec ses clés (§6.1) ;
+   - le rendu passe (`helm upgrade --dry-run=server`).
+
+   Si quelque chose manque, on s'arrête ici avec un message clair, sans coupure.
+
+2. **Arrêt** : `helm upgrade --install` avec le nouveau digest et `odoo.replicas=0`. Les
+   ressources sont créées ou mises à jour (ConfigMap, Secrets, base, volumes), mais
+   aucun pod Odoo ne tourne. On attend la fin des pods. En recette et en prod, la
+   coupure commence.
+3. **Point de restauration** (recette et prod, sauf premier déploiement), étiqueté avec
+   le digest en cours et le digest visé :
    - base : `Backup` CNPG `method: volumeSnapshot`, `online: false`. Le snapshot est à
      froid : Odoo est arrêté, donc le fencing ne gêne pas, et le snapshot ne dépend pas
      de l'archivage des WAL ;
    - filestore : `VolumeSnapshot` du volume `/var/lib/odoo` ;
    - attente de `readyToUse`. On garde les 3 derniers points (réglable).
-5. **Mise à jour** :
-   - `helm upgrade --wait` vers le nouveau digest (stratégie Recreate) ;
-   - `prepare` lance `click-odoo-update` (modules dont l'empreinte a changé), puis pose
-     le marqueur ;
-   - Odoo démarre.
-6. **Smoke test** : `/web/health` et `/web/login` en HTTPS sur l'hôte public. La coupure
-   prend fin.
-7. **Échec en 5 ou 6** : rollback automatique (§3.3). Le job échoue, avec le détail dans
-   le résumé.
+4. **Job** : `helm upgrade` avec `jobs.migrate.run=true` (recette, prod) ou
+   `jobs.reset.run=true` (review), Odoo toujours à 0. Puis
+   `kubectl wait --for=condition=complete` sur le Job, avec un délai réglable. Un échec
+   du Job fait échouer le déploiement, avec ses logs dans le résumé.
+5. **Démarrage** : `helm upgrade` avec `odoo.replicas=1 --wait`, puis smoke test :
+   `/web/health` et `/web/login` en HTTPS sur l'hôte public. La coupure prend fin.
+6. **Échec en 4 ou 5** (recette, prod) : rollback automatique (§3.3). Le job échoue,
+   avec le détail dans le résumé.
+
+Chaque déploiement crée donc trois révisions Helm ; l'historique est limité
+(`--history-max`). Le premier déploiement suit les mêmes étapes, sans point de
+restauration : le Job `migrate` voit une base vide et l'initialise.
+
+Pas de hooks Helm : `pre-install` tourne avant que les Secrets et la base existent, et
+`pre-upgrade` pendant que l'ancien pod sert encore.
 
 Pas de `--rollback-on-failure` Helm. Remettre l'ancienne image sur une base migrée
 serait pire que l'échec, même si la migration n'est que partielle : Odoo committe après
@@ -151,12 +176,12 @@ dans les valeurs de la release, qui suffixe le cluster CNPG (`<release>-pg-<g>`)
 volume du filestore (`odoo-data-<g>`).
 
 1. Odoo passe à 0 replica. On prend un snapshot de l'état en échec, gardé pour analyse.
-2. Génération `g+1` :
+2. `helm upgrade` avec la génération `g+1`, le **digest précédent** et Odoo à 0 :
    - un cluster CNPG restauré depuis le snapshot du point de restauration
      (`bootstrap.recovery.volumeSnapshots`) ;
    - un volume du filestore créé depuis son `VolumeSnapshot`.
-3. `helm upgrade` avec la génération `g+1` et le **digest précédent**. Le marqueur est
-   identique, donc `prepare` ne fait rien. Puis smoke test.
+3. Pas de Job : la base restaurée correspond déjà au digest précédent. Odoo passe à 1
+   replica, puis smoke test.
 4. La génération `g`, en échec, reste en place pour analyse. Sa suppression est manuelle
    et documentée.
 
@@ -172,13 +197,15 @@ volume du filestore (`odoo-data-<g>`).
 ### 3.4 Sauvegardes et reprise après sinistre
 
 Les snapshots restent dans le stockage du cluster : ils ne protègent pas d'une perte du
-cluster. En plus, hors du cluster (bucket S3) :
+cluster. Hors du cluster :
 
-- **base** : archivage continu des WAL et sauvegarde complète chaque nuit (CNPG, plugin
-  Barman Cloud, `ScheduledBackup`). Cela permet une restauration à un instant donné.
+- **base** : archivage continu des WAL et sauvegarde complète chaque nuit vers l'
+  `ObjectStore` fourni par l'administrateur (CNPG, plugin Barman Cloud,
+  `ScheduledBackup` créé par le chart). Cela permet une restauration à un instant donné.
   Rétention de 30 jours par défaut, réglable ;
-- **filestore** : sauvegarde chaque nuit, par un job récurrent Longhorn vers sa cible
-  S3, ou par Velero ;
+- **filestore** : sauvegarde hors cluster recommandée, à la charge de l'administrateur
+  avec l'outil de son choix (job récurrent de son stockage, Velero…). Documenté comme
+  pré-requis recommandé ;
 - **secrets** : récupérables avec l'outil de l'équipe (Sealed Secrets, SOPS, External
   Secrets…) ; ils ne sont ni dans le dépôt ni dans GitHub (§6.1) ;
 - **test de restauration** complet dans un namespace vierge, en phase 6 puis
@@ -187,119 +214,136 @@ cluster. En plus, hors du cluster (bucket S3) :
 Si les pièces jointes passent un jour sur S3 (`fs_attachment`, pas encore porté en
 20.0), le versioning du bucket remplacera le snapshot du filestore.
 
+### 3.5 Neutralisation
+
+La neutralisation d'Odoo 20 est une opération sur la base, pas un mode de lancement
+(`odoo neutralize`, `odoo db load -n`, `odoo db duplicate -n`). Elle applique le
+`data/neutralize.sql` de chaque module installé : crons désactivés (sauf l'autovacuum),
+serveurs mail désactivés et remplacés par un serveur factice, `database.secret` changé,
+webhooks, paiements et EDI neutralisés.
+
+- Elle se fait **quand une copie de la prod arrive en recette** : runbook de
+  rafraîchissement avec `odoo db load -n` (v1).
+- Jamais pendant un déploiement : rejouée à chaque mise à jour, elle recouperait les
+  crons réactivés par les testeurs et changerait `database.secret`.
+- Ni en review (base de démo, Mailpit), ni en prod.
+
 ## 4. Pré-requis
+
+Le modèle **n'installe rien dans le cluster**. Il exige des fonctions, que les
+administrateurs installent et exploitent avec les produits de leur choix. Les produits
+cités sont des exemples. `ci/deploy.sh` vérifie ces fonctions avant de déployer (§3.2).
 
 ### Cluster(s)
 
 1. Kubernetes **1.35 ou 1.36**.
    - La 1.34 arrive en fin de support le 2026-10-27, et CNPG 1.30 couvre 1.34 à 1.36.
-   - Managé (Scaleway Kapsule, OVHcloud MKS…) ou auto-géré (k3s, Talos).
+   - Managé ou auto-géré, au choix.
 2. **Deux clusters recommandés**, l'un hors prod (review et recette), l'autre pour la
    prod. À défaut, un pool de nœuds dédié à la prod, car le code des PR tourne dans le
    cluster des reviews.
 3. **Capacité** (estimation, mesurée en phase 6) :
-   - review app : environ 0,4 vCPU et 1 GiB demandés, avec un pic de CPU à
-     l'initialisation ;
+   - review app : environ 0,4 vCPU et 1 GiB demandés, avec un pic de CPU pendant le Job
+     `reset` ;
    - recette : environ 1 vCPU et 3 GiB ;
    - prod : workers = CPU × 2 + 1, environ 6 utilisateurs par worker ;
    - exemple hors prod pour 5 review apps et la recette : 2 nœuds de 4 vCPU / 8 GiB.
-4. Un plugin réseau qui applique les NetworkPolicy (Cilium, Calico ; k3s le fait
-   nativement).
-5. Pod Security Admission : namespaces `restricted`.
-6. metrics-server.
+4. Les **NetworkPolicy appliquées** par le plugin réseau.
+5. Pod Security Admission : le chart est compatible `restricted`.
+6. Les **namespaces** du projet, créés par l'administrateur (quota et LimitRange
+   recommandés pour celui des reviews).
 
 ### Stockage
 
-7. **Longhorn** (référence du kit), ou un CSI qui gère les `VolumeSnapshot`.
-   - CRD `snapshot.storage.k8s.io` et snapshot-controller.
-   - Une `VolumeSnapshotClass` ; avec Longhorn, `type: snap` pour les points de
-     restauration.
-8. **StorageClasses :**
-   - filestore : réplication Longhorn 2 ou 3, extension de volume ;
-   - base : la doc CNPG conseille un seul réplica au niveau stockage (strict-local)
-     quand PostgreSQL a ses propres réplicas. Avec une seule instance PostgreSQL, on
-     garde la réplication Longhorn ;
-   - reviews : `reclaimPolicy: Delete`.
-9. Une cible de sauvegarde Longhorn (S3) pour le filestore.
+7. Un **CSI qui gère les `VolumeSnapshot`** : CRD `snapshot.storage.k8s.io`,
+   snapshot-controller et une `VolumeSnapshotClass` (Longhorn, Rook-Ceph, CSI du
+   fournisseur cloud…).
+8. Des **StorageClasses** pour le filestore, la base et les reviews
+   (`reclaimPolicy: Delete` conseillé pour les reviews). Le chart les prend par nom dans
+   les valeurs.
+9. Recommandé : une sauvegarde hors cluster du filestore (§3.4).
 
 ### PostgreSQL
 
-10. **CloudNativePG 1.30** et son **plugin Barman Cloud** ; la méthode de sauvegarde
-    intégrée est dépréciée.
-11. Un **bucket S3 hors du cluster** (WAL et sauvegardes complètes), avec ses
-    identifiants.
-12. PostgreSQL 18, base créée par CNPG, rôle Odoo non superutilisateur et propriétaire
-    de la base.
+10. L'opérateur **CloudNativePG 1.30** et son **plugin Barman Cloud** ; la méthode de
+    sauvegarde intégrée est dépréciée.
+11. Un **`ObjectStore`** Barman Cloud dans chaque namespace de recette et de prod, vers
+    un bucket S3 hors du cluster, avec ses identifiants. Le chart le référence par nom.
+12. Le chart crée le `Cluster` CNPG : PostgreSQL 18, rôle Odoo non superutilisateur et
+    propriétaire de la base.
 
 Une base managée reste possible (mode `external` du chart), mais sans point de
 restauration ni rollback automatique pour la base.
 
 ### Réseau, DNS, TLS
 
-13. **Gateway API v1.6** (CRD du canal standard) et une implémentation conforme :
-    Traefik, Envoy Gateway, Cilium, NGINX Gateway Fabric, Istio…
-    - **Pas ingress-nginx**, qui est retiré.
-    - Le `/websocket` d'Odoo doit passer.
-14. Un LoadBalancer pour la Gateway : celui du fournisseur, ou ServiceLB / MetalLB.
-15. **Une Gateway partagée** (exemple fourni) :
-    - listeners HTTPS pour `*.<REVIEW_DOMAIN>` et pour les hôtes de recette et de prod ;
-    - `allowedRoutes` filtré par label de namespace ;
-    - redirection HTTP → HTTPS.
-16. **cert-manager 1.21** avec le support Gateway API, et un ClusterIssuer Let's Encrypt
-    :
-    - DNS-01 pour le wildcard des reviews, ce qui demande un **jeton d'API du
-      fournisseur DNS** ;
-    - HTTP-01 suffit pour les hôtes fixes.
-17. DNS : `*.<REVIEW_DOMAIN>` et les hôtes de recette et de prod pointent vers la
+13. Une **implémentation de Gateway API v1.6** (canal standard) et une **Gateway**
+    fournie par l'administrateur :
+    - listeners HTTPS pour `*.<domaine des reviews>` et pour les hôtes de recette et de
+      prod, avec leurs certificats (wildcard pour les reviews) gérés comme
+      l'administrateur l'entend ;
+    - `allowedRoutes` qui accepte les namespaces du projet ;
+    - le `/websocket` d'Odoo doit passer ;
+    - pas ingress-nginx, qui est retiré.
+
+    Le chart ne crée que des `HTTPRoute` rattachées à cette Gateway (valeur
+    `gateway.parentRefs`).
+
+14. DNS : `*.<domaine des reviews>` et les hôtes de recette et de prod pointent vers la
     Gateway.
 
 ### Registre et secrets
 
-18. **Jeton GHCR** : un PAT **classique** `read:packages`, appartenant à un compte
+15. **Jeton GHCR** : un PAT **classique** `read:packages`, appartenant à un compte
     machine qui a accès aux paquets `<dépôt>` et `<dépôt>/builds`.
     - GHCR n'accepte pas les PAT fine-grained, et les jetons d'app expirent en 1 h.
-    - Il est stocké en secret `docker-registry` `ghcr-pull` dans chaque namespace.
+    - Il est stocké en secret `docker-registry` dans chaque namespace (nom dans les
+      valeurs).
     - Sa rotation est à planifier.
-19. **Secrets de recette et de prod**, créés dans le cluster, hors du dépôt et hors de
+16. **Secrets de recette et de prod**, créés dans le cluster, hors du dépôt et hors de
     GitHub, avec le nom et les clés attendus par le chart (§6.1) :
     - un Secret applicatif par namespace : `admin-passwd`, et `smtp-password` pour la
       prod ;
     - n'importe quel outil peut le produire : `kubectl`, Sealed Secrets, SOPS, External
       Secrets (Vault, gestionnaire du fournisseur cloud, Infisical…). Exemples dans
-      `deploy/cluster/` ;
+      `deploy/examples/` ;
     - la connexion PostgreSQL vient du secret `<cluster>-app` de CNPG ;
     - pour les reviews, les secrets sont générés par le chart.
 
 ### Accès de la CI et GitHub
 
-20. **API du cluster joignable depuis les runners GitHub.** Aucune IP fixe n'est
+17. **API du cluster joignable depuis les runners GitHub.** Aucune IP fixe n'est
     documentée pour les runners standard. Sinon : runners « larger » à IP fixe, ou
     runners dans le cluster.
-21. **Un ServiceAccount de déploiement par namespace**, avec un Role limité au namespace
-    : ressources du chart, `deployments/scale`, `volumesnapshots`, et `backups` et
-    `clusters` CNPG.
-    - Son kubeconfig est produit par `deploy/cluster/ci-kubeconfig.sh`.
+18. **Un ServiceAccount de déploiement par namespace**, avec un Role limité au
+    namespace. Le modèle documente les permissions nécessaires et fournit un Role de
+    référence (`deploy/examples/ci-access.yaml`) que l'administrateur applique ou adapte
+    : ressources du chart, `jobs`, `deployments/scale`, `volumesnapshots`, et `backups`
+    et `clusters` CNPG.
+    - `deploy/examples/ci-kubeconfig.sh` produit son kubeconfig.
     - L'OIDC est un durcissement possible, selon le fournisseur.
-22. **Environnements GitHub** `review`, `recette` et `production` :
+19. **Environnements GitHub** `review`, `recette` et `production` :
     - secret `KUBECONFIG` dans chacun, seul secret côté GitHub ;
     - règles de branches et de tags (§2) ;
     - variable `REVIEW_MAX_APPS`. Les hôtes, le domaine des reviews, les namespaces et
       la Gateway sont dans `deploy/values/*.yaml`, versionnés et relus en PR.
-23. **Ruleset sur les tags `v*`** : création réservée aux mainteneurs, puisqu'un tag
+20. **Ruleset sur les tags `v*`** : création réservée aux mainteneurs, puisqu'un tag
     déclenche une mise en prod.
-24. Les pré-requis CI existants (rôle Admin sur les paquets). La CI v2 est verte sur
+21. Les pré-requis CI existants (rôle Admin sur les paquets). La CI v2 est verte sur
     GitHub (main, develop) depuis le 2026-10-16.
 
 ### Exploitation (recommandé, non fourni)
 
-25. Logs, métriques et alertes : déploiement en échec, CrashLoopBackOff, sauvegarde
+22. Logs, métriques et alertes : déploiement en échec, CrashLoopBackOff, sauvegarde
     manquée.
-26. Une fenêtre de mise en prod : le tag coupe le service le temps de la mise à jour.
+23. Une fenêtre de mise en prod : le tag coupe le service le temps de la mise à jour.
 
 ### Poste de dev
 
-27. `kubectl`, Helm 4, kind et Docker. Le test de bout en bout installe en plus CNPG,
-    csi-driver-host-path, snapshot-controller et MinIO dans kind (`ci/chart-e2e.sh`).
+24. `kubectl`, Helm 4, kind et Docker. Pour ses propres tests, `ci/chart-e2e.sh`
+    installe dans kind CNPG, csi-driver-host-path, snapshot-controller, une
+    implémentation Gateway API et MinIO. Ce n'est pas une installation de référence pour
+    un cluster.
 
 ## 5. Phase 0 — sur `20.0`
 
@@ -343,36 +387,44 @@ Un seul chart `odoo` pour les trois environnements, conforme à `kubernetes-patt
 - `automountServiceAccountToken: false` ;
 - requests et limits partout ;
 - sondes startup, liveness et readiness sur `/web/health` ;
-- stratégie `Recreate`, 1 replica.
+- stratégie `Recreate`, 0 ou 1 replica ;
+- aucun produit d'infrastructure supposé : StorageClasses, `VolumeSnapshotClass`,
+  Gateway et `ObjectStore` sont des noms dans les valeurs.
 
-| Template                                        | Rôle                                                                                                                                                       |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deployment.yaml`                               | Odoo, init container `prepare` (même image), sidecar Mailpit (en option)                                                                                   |
-| `service.yaml`                                  | 8069 ; 8072 (`appProtocol: kubernetes.io/ws`) si `workers` > 0 ; 8025 (Mailpit)                                                                            |
-| `httproute.yaml`                                | Hôte Odoo (`/websocket` vers 8072 en multi-process), hôte Mailpit, filtres optionnels                                                                      |
-| `pvc.yaml`                                      | `/var/lib/odoo` (filestore, sessions) : `odoo-data-<g>`, créé depuis un `VolumeSnapshot` au rollback ; `helm.sh/resource-policy: keep` hors review         |
-| `postgres.yaml`                                 | Review : PostgreSQL 18 éphémère (Deployment, Service, volume monté sur `/var/lib/postgresql`)                                                              |
-| `cnpg.yaml`                                     | Recette et prod : `Cluster` `<release>-pg-<g>` (PG 18, `keep`), `ScheduledBackup`, `ObjectStore` Barman Cloud ; bootstrap depuis les snapshots au rollback |
-| `configmap-config.yaml`                         | `odoo.conf` complet généré depuis `odoo.config`, sans secret (§6.1)                                                                                        |
-| `secrets.yaml`                                  | Review : mots de passe générés une fois, conservés via `lookup`                                                                                            |
-| `networkpolicy.yaml`                            | Odoo joignable depuis la Gateway seulement ; PostgreSQL depuis l'Odoo de la release seulement                                                              |
-| `serviceaccount.yaml`, `configmap-prepare.yaml` | Compte sans jeton ; script `prepare`                                                                                                                       |
+| Template                 | Rôle                                                                                                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deployment.yaml`        | Odoo (sans init container), sidecar Mailpit (en option) ; `replicas` depuis `odoo.replicas`                                                           |
+| `job-migrate.yaml`       | Job `migrate` (§6.2), rendu si `jobs.migrate.run`                                                                                                     |
+| `job-reset.yaml`         | Job `reset` (§6.3), rendu seulement si `jobs.reset.run` **et** base `ephemeral` **et** environnement `review`                                         |
+| `configmap-scripts.yaml` | `migrate.sh` ; `reset.sh` seulement avec une base `ephemeral`                                                                                         |
+| `configmap-config.yaml`  | `odoo.conf` complet généré depuis `odoo.config`, sans secret (§6.1)                                                                                   |
+| `service.yaml`           | 8069 ; 8072 (`appProtocol: kubernetes.io/ws`) si `workers` > 0 ; 8025 (Mailpit)                                                                       |
+| `httproute.yaml`         | Hôte Odoo (`/websocket` vers 8072 en multi-process), hôte Mailpit, filtres optionnels ; rattaché à la Gateway de l'administrateur                     |
+| `pvc.yaml`               | `/var/lib/odoo` (filestore, sessions) : `odoo-data-<g>`, créé depuis un `VolumeSnapshot` au rollback ; `helm.sh/resource-policy: keep` hors review    |
+| `postgres.yaml`          | Base `ephemeral` (review) : PostgreSQL 18 (Deployment, Service `<release>-postgres`, volume sur `/var/lib/postgresql`)                                |
+| `cnpg.yaml`              | Base `cnpg` : `Cluster` `<release>-pg-<g>` (PG 18, `keep`), `ScheduledBackup` vers l'`ObjectStore` nommé ; bootstrap depuis les snapshots au rollback |
+| `secrets.yaml`           | Review : mots de passe générés une fois, conservés via `lookup`                                                                                       |
+| `networkpolicy.yaml`     | Odoo joignable depuis la Gateway seulement ; PostgreSQL depuis les pods de la release seulement                                                       |
+| `serviceaccount.yaml`    | Compte sans jeton                                                                                                                                     |
 
 **`values.yaml`** (avec `values.schema.json`) :
 
+- `environment` : `review`, `recette` ou `production` (obligatoire) ;
 - image et digest ;
+- `odoo.replicas` (0 ou 1), `jobs.migrate.run`, `jobs.reset.run` : posés par
+  `ci/deploy.sh` à chaque étape ;
 - `odoo.config` : sections et options d'`odoo.conf` (§6.1) ;
 - `secrets` : nom du Secret applicatif, et variables `secrets.env` des modules ;
-- modules à installer (par défaut tout `addons/`) et démo ;
-- mode de `prepare` : `reset` ou `upgrade` ;
+- modules à installer (par défaut tout `addons/`) ;
 - base : `ephemeral`, `cnpg` ou `external` ;
 - génération ;
-- Gateway et hôtes (domaine des reviews), Mailpit, ressources.
+- noms des StorageClasses, de la `VolumeSnapshotClass`, de l'`ObjectStore`, du secret de
+  registre ; Gateway (`parentRefs`) et hôtes ; Mailpit ; ressources ; délai des Jobs.
 
 Les valeurs par environnement sont dans
-`deploy/values/{review,recette,production}.yaml`. La CI n'ajoute que le digest, et la
-génération lors d'un rollback. L'hôte d'une review est déduit du nom de la release
-(`<projet>-pr-<n>.<domaine des reviews>`).
+`deploy/values/{review,recette,production}.yaml`. La CI n'ajoute que le digest, les
+réglages d'étape et la génération lors d'un rollback. L'hôte d'une review est déduit du
+nom de la release (`<projet>-pr-<n>.<domaine des reviews>`).
 
 ### 6.1 Configuration d'Odoo et secrets
 
@@ -420,8 +472,9 @@ dans l'environnement.
     et `http_interface`. `db_name` vient de `PGDATABASE`, et sans `dbfilter` Odoo ne
     sert que cette base.
   - Le fichier est monté en lecture seule sur `/etc/odoo/odoo.conf`, avec
-    `ODOO_RC=/etc/odoo/odoo.conf`, à la place du `docker/odoo.conf` statique de l'image.
-    L'entrypoint de l'image ne fait que vérifier les variables requises (phase 0 bis).
+    `ODOO_RC=/etc/odoo/odoo.conf`, à la place du `docker/odoo.conf` statique de l'image,
+    dans le pod Odoo comme dans les Jobs. L'entrypoint de l'image ne fait que vérifier
+    les variables requises (phase 0 bis).
   - `values.schema.json` : noms de section et d'option en `[a-z0-9_.]`, valeurs
     scalaires ou listes de scalaires, sans retour à la ligne. Une option dont le nom
     contient `passw`, `secret` ou `token` est refusée dans toutes les sections : aucun
@@ -454,7 +507,7 @@ dans l'environnement.
   avec le bon nom et les bonnes clés. On peut le produire avec `kubectl create secret`,
   Sealed Secrets, SOPS ou un `ExternalSecret` (External Secrets Operator : Vault, AWS,
   GCP, Azure, Infisical…). Le chart ne crée pas d'`ExternalSecret` en v1 : un exemple
-  est fourni dans `deploy/cluster/`.
+  est fourni dans `deploy/examples/`.
 - **Changements :**
   - quand la ConfigMap change, le pod redémarre (annotation `checksum/config`) ;
   - quand un secret change (rotation), le pod ne redémarre pas tout seul : il faut
@@ -473,31 +526,68 @@ dans l'environnement.
   review ne fixe son mot de passe qu'à la création de son volume, et la valeur serait
   copiée dans l'historique Helm.
 
-**`deploy/chart/files/prepare.sh`** :
+### 6.2 Job `migrate` (tous les environnements)
+
+Même image, même `odoo.conf`, mêmes Secrets que le pod Odoo. Nommé
+`<release>-migrate-<digest court>` : un Job ne se modifie pas, et redéployer le même
+digest ne relance rien. `backoffLimit: 0` (une migration partielle ne se rejoue pas
+automatiquement), `activeDeadlineSeconds` réglable, `ttlSecondsAfterFinished`.
+
+`deploy/chart/files/migrate.sh` :
 
 1. attend PostgreSQL ;
-2. lit le marqueur ;
-3. en mode `reset` (review), supprime et recrée la base avec la démo si le digest a
-   changé ;
-4. en mode `upgrade` (recette, prod), installe les modules si la base est vide, sinon
-   lance `click-odoo-update` si le digest a changé ;
-5. pose le marqueur.
+2. **base vide** (pas de table `ir_module_module`) :
+   `odoo -i <modules de addons/> --stop-after-init --no-http`, sans démo, puis
+   `click-odoo-update --only-compute-hashes` pour poser la référence ;
+3. **base initialisée** : `click-odoo-update` (seulement les modules dont l'empreinte a
+   changé).
 
-Il s'arrête en erreur au moindre échec (aucun `|| true`).
+Il ne contient aucune commande de suppression, ne neutralise pas, et s'arrête au moindre
+échec (aucun `|| true`). Le pod Odoo, lui, ne fait que servir : un redémarrage ne touche
+jamais la base.
+
+### 6.3 Job `reset` (review uniquement) et garde-fous
+
+Un seul chart, mais la remise à zéro est impossible hors des reviews, à chaque niveau :
+
+- **Au rendu (Helm).** `job-reset.yaml` et `reset.sh` ne sont rendus que si la base est
+  `ephemeral`, c'est-à-dire un PostgreSQL créé par le chart lui-même. Avec
+  `jobs.reset.run=true`, le template échoue (`fail`) si la base est `cnpg` ou
+  `external`, ou si `environment` vaut `production` ou `recette`. `values.schema.json`
+  n'accepte `ephemeral` qu'avec `environment: review`. Une valeur mal placée fait donc
+  échouer le lint et le déploiement, avant toute action.
+- **À l'exécution (Job).** `reset.sh` refuse de tourner si `ODOO_ENVIRONMENT` (posé par
+  le chart) n'est pas `review`, ou si `PGHOST` n'est pas `<release>-postgres`, le
+  service de sa propre release.
+- **Par les droits.** Les comptes de déploiement sont propres à chaque namespace : le
+  job `review` de la CI ne peut rien faire dans celui de la prod.
+- **Par les tests.** `ci/chart-lint.sh` vérifie que :
+  - le rendu de `production.yaml` et de `recette.yaml` ne contient ni Job `reset`, ni
+    `reset.sh`, ni `dropdb` / `DROP DATABASE` ;
+  - ces deux rendus avec `jobs.reset.run=true` échouent.
+
+`deploy/chart/files/reset.sh` :
+
+1. vérifications ci-dessus ;
+2. attend PostgreSQL ;
+3. supprime la base (`dropdb --if-exists`) et son filestore
+   (`/var/lib/odoo/filestore/<base>`) ;
+4. crée la base avec la démo et installe les modules de `addons/` ;
+5. pose le mot de passe admin (Secret de la release).
 
 L'image ne change pas pour Kubernetes, en dehors des phases 0 et 0 bis.
 
 ## 7. Scripts `ci/`
 
-| Script                          | Rôle                                                                                                                                                                                                                                                                           |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ci/deploy.sh ENV IMAGE@DIGEST` | Valeurs de `deploy/values/ENV.yaml`, plus le digest. Review : plafond, puis `helm upgrade --install`. Recette et prod : arrêt, point de restauration, mise à jour, smoke HTTPS, rollback automatique en cas d'échec. Répare une release bloquée en « pending ». Résumé du job. |
-| `ci/deploy-snapshot.sh`         | Point de restauration : création, attente, rétention                                                                                                                                                                                                                           |
-| `ci/deploy-rollback.sh [POINT]` | Rollback (§3.3), appelé aussi par le workflow manuel                                                                                                                                                                                                                           |
-| `ci/review-remove.sh N`         | `helm uninstall pr-<n>`                                                                                                                                                                                                                                                        |
-| `ci/review-sweep.sh`            | Review apps des PR fermées (API GitHub) ; `DRY_RUN` et liste de PR factice pour les tests                                                                                                                                                                                      |
-| `ci/chart-lint.sh`              | `helm lint`, rendu des trois environnements, kubeconform (avec les schémas des CRD), `odoo.conf` rendu comparé à un fichier attendu (sections, listes, booléens, secret en clair refusé)                                                                                       |
-| `ci/chart-e2e.sh`               | kind avec CNPG, csi-driver-host-path et MinIO : scénarios de la phase 2, en local                                                                                                                                                                                              |
+| Script                          | Rôle                                                                                                                                                                                                                                                                                                        |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ci/deploy.sh ENV IMAGE@DIGEST` | Valeurs de `deploy/values/ENV.yaml`, plus le digest. Vérification des pré-requis, puis étapes du §3.2 (arrêt, point de restauration, Job, démarrage, smoke HTTPS), rollback automatique en cas d'échec. Plafond des reviews. Répare une release bloquée en « pending ». Résumé du job avec les logs du Job. |
+| `ci/deploy-snapshot.sh`         | Point de restauration : création, attente, rétention                                                                                                                                                                                                                                                        |
+| `ci/deploy-rollback.sh [POINT]` | Rollback (§3.3), appelé aussi par le workflow manuel                                                                                                                                                                                                                                                        |
+| `ci/review-remove.sh N`         | `helm uninstall pr-<n>`                                                                                                                                                                                                                                                                                     |
+| `ci/review-sweep.sh`            | Review apps des PR fermées (API GitHub) ; `DRY_RUN` et liste de PR factice pour les tests                                                                                                                                                                                                                   |
+| `ci/chart-lint.sh`              | `helm lint`, rendu des trois environnements, kubeconform (avec les schémas des CRD), `odoo.conf` rendu comparé à un fichier attendu (sections, listes, booléens, secret en clair refusé), garde-fous du Job `reset` (§6.3)                                                                                  |
+| `ci/chart-e2e.sh`               | kind avec CNPG, csi-driver-host-path, une Gateway et MinIO, installés pour le test : scénarios de la phase 2, en local                                                                                                                                                                                      |
 
 ## 8. Workflows
 
@@ -523,60 +613,57 @@ L'image ne change pas pour Kubernetes, en dehors des phases 0 et 0 bis.
 - **`.pre-commit-config.yaml`, `.prettierignore`** : les templates Helm sont exclus de
   prettier et de check-yaml (les `{{ }}` les cassent).
 
-## 9. Kit d'amorçage — `deploy/cluster/`
+## 9. Exemples — `deploy/examples/`
 
-Fichiers à appliquer une fois par cluster ou par projet. Ce sont des exemples, à adapter
-:
+Le modèle ne fournit **aucune installation de cluster**. `deploy/examples/` ne contient
+que des exemples liés au projet, à appliquer ou adapter par l'administrateur :
 
-- `namespaces.yaml` : namespaces, labels PSA `restricted`, label d'accès à la Gateway ;
-- `review-quota.yaml` : ResourceQuota et LimitRange du namespace des reviews ;
-- `ci-access.yaml` et `ci-kubeconfig.sh` : ServiceAccount, Role, RoleBinding, jeton, et
-  kubeconfig pour GitHub ;
-- `gateway.yaml` : Gateway partagée, listeners, redirection HTTPS ;
-- `cert-manager.yaml` : ClusterIssuer (DNS-01 et HTTP-01), certificat wildcard des
-  reviews ;
-- `longhorn.yaml` : StorageClasses, `VolumeSnapshotClass`, job récurrent de sauvegarde
-  du filestore ;
-- `cnpg-objectstore.yaml` : `ObjectStore` Barman Cloud et identifiants S3 ;
+- `ci-access.yaml` et `ci-kubeconfig.sh` : ServiceAccount, Role de référence (les
+  permissions dont la CI a besoin), RoleBinding, jeton, et kubeconfig pour GitHub ;
 - `app-secret.example.sh` : création du Secret applicatif avec `kubectl` (clés du §6.1)
   ;
 - `external-secret.example.yaml` : le même Secret produit par External Secrets Operator
   ;
-- `ghcr-pull-secret.sh` : crée le secret `ghcr-pull` dans un namespace.
+- `registry-secret.sh` : crée le secret de registre GHCR dans un namespace.
+
+Les fonctions du cluster (§4) sont décrites dans `docs/deployment-kubernetes.md`, avec
+des liens vers la documentation des produits courants. Le modèle ne fournit pour eux ni
+manifeste ni script.
 
 ## 10. Documentation
 
 - `docs/deployment-kubernetes.md` :
-  - pré-requis (§4), amorçage pas à pas, workflow ;
-  - runbooks : rollback manuel, restauration après sinistre, recette rechargée depuis la
-    prod neutralisée (`odoo db load -n`), rotation des jetons et des secrets (avec
-    redémarrage), changement d'outil de gestion des secrets, suppression des générations
-    inactives, dépannage.
+  - pré-requis (§4) décrits comme des fonctions, avec la façon de les vérifier ; mise en
+    place du projet pas à pas ; workflow ;
+  - runbooks : rollback manuel, restauration après sinistre, **rafraîchissement de la
+    recette depuis la prod avec neutralisation** (`odoo db load -n`), rotation des
+    jetons et des secrets (avec redémarrage), changement d'outil de gestion des secrets,
+    suppression des générations inactives, Job en échec, dépannage.
 - `README.md`, `docs/ci.md`, `docs/gitflow.md` : environnements désormais déployés,
   nouveaux jobs, contrôles requis.
 - Ce plan : une note d'écarts en tête une fois implémenté.
 
 ## 11. Phases et vérification (`ecc:verification-loop`)
 
-| Phase | Contenu                | Vérification                                                     |
-| ----- | ---------------------- | ---------------------------------------------------------------- |
-| 0     | §5, sur `20.0`         | Voir §5                                                          |
-| 0 bis | §5 bis, sur `20.0`     | Voir §5 bis                                                      |
-| 1     | Essais, avant le chart | Voir ci-dessous                                                  |
-| 2     | Chart et `prepare.sh`  | `ci/chart-lint.sh` ; scénarios de `ci/chart-e2e.sh` ci-dessous   |
-| 3     | Scripts `ci/`          | shellcheck ; exécution contre kind ; sweep sur une liste factice |
-| 4     | Workflows              | actionlint, pre-commit                                           |
-| 5     | Kit et documentation   | kubeconform, dry-run serveur sur kind                            |
-| 6     | Validation réelle      | Scénarios ci-dessous, sur le dépôt de test et un vrai cluster    |
+| Phase | Contenu                   | Vérification                                                     |
+| ----- | ------------------------- | ---------------------------------------------------------------- |
+| 0     | §5, sur `20.0`            | Voir §5                                                          |
+| 0 bis | §5 bis, sur `20.0`        | Voir §5 bis                                                      |
+| 1     | Essais, avant le chart    | Voir ci-dessous                                                  |
+| 2     | Chart, `migrate`, `reset` | `ci/chart-lint.sh` ; scénarios de `ci/chart-e2e.sh` ci-dessous   |
+| 3     | Scripts `ci/`             | shellcheck ; exécution contre kind ; sweep sur une liste factice |
+| 4     | Workflows                 | actionlint, pre-commit                                           |
+| 5     | Exemples et documentation | kubeconform des exemples, dry-run serveur sur kind               |
+| 6     | Validation réelle         | Scénarios ci-dessous, sur le dépôt de test et un vrai cluster    |
 
 **Phase 1, essais :**
 
-- les commandes Odoo 20 passent par notre entrypoint avec les variables `PG*` : création
-  avec démo, mot de passe admin, `-i` sur une base vide existante, `click-odoo-update`
-  (référence posée à l'installation) ;
-- avec un `odoo.conf` monté (`ODOO_RC`) et les secrets en variables `ODOO_*` et `PG*` :
-  `odoo`, `odoo db init`, `click-odoo-update` et le jobrunner de queue_job (section
-  `[queue_job]`, `ODOO_QUEUE_JOB_HTTP_AUTH_PASSWORD`) lisent bien leur configuration ;
+- avec un `odoo.conf` monté (`ODOO_RC`) et les secrets en variables `ODOO_*` et `PG*`,
+  via notre entrypoint : `odoo`, `odoo -i` sur une base vide existante (cas CNPG),
+  création avec démo et mot de passe admin (cas `reset`), `click-odoo-update` (référence
+  posée à l'installation) et le jobrunner de queue_job (section `[queue_job]`,
+  `ODOO_QUEUE_JOB_HTTP_AUTH_PASSWORD`) lisent bien leur configuration ;
+- détection « base vide » de `migrate.sh` ;
 - le rendu PDF fonctionne avec la racine en lecture seule ; PostgreSQL 18 et Mailpit
   tournent en non-root (PSA `restricted`) ;
 - CNPG sur kind :
@@ -584,19 +671,23 @@ Fichiers à appliquer une fois par cluster ou par projet. Ce sont des exemples, 
   - restauration dans un nouveau cluster ;
   - snapshots qui survivent à la suppression du cluster ;
   - archivage des WAL d'une nouvelle génération ;
-- un volume créé depuis un `VolumeSnapshot`. La durée de restauration avec Longhorn se
-  mesure sur le vrai cluster, en phase 6.
+- un volume créé depuis un `VolumeSnapshot`. La durée de restauration se mesure sur le
+  stockage du vrai cluster, en phase 6.
 
 **Phase 2, scénarios de `ci/chart-e2e.sh` :**
 
 - review :
-  - installation, avec `/web/health` et `/web/login` à 200 ;
+  - installation (Odoo à 0, Job `reset`, Odoo à 1), avec `/web/health` et `/web/login` à
+    200 ;
   - nouvelle image → remise à zéro ;
-  - redémarrage du pod → pas de remise à zéro ;
+  - redémarrage du pod → aucun Job, données conservées ;
+- garde-fous : `jobs.reset.run=true` avec les valeurs de recette ou de prod → échec du
+  rendu ; `reset.sh` lancé avec un autre `PGHOST` → refus ;
 - recette :
-  - première installation ;
+  - première installation (Job `migrate` sur base vide) ;
   - mise à jour avec point de restauration ;
-  - module cassé → rollback automatique (base, filestore et digest précédents) ;
+  - module cassé → Job en échec → rollback automatique (base, filestore et digest
+    précédents) ;
   - rollback manuel.
 
 **Phase 6, scénarios :**
@@ -611,41 +702,45 @@ Fichiers à appliquer une fois par cluster ou par projet. Ce sont des exemples, 
 7. tag `v0.1.0` → prod ;
 8. mise à jour cassée en recette → rollback automatique, puis rollback manuel ;
 9. restauration après sinistre depuis S3, dans un namespace vierge ;
-10. sweep et nettoyage nocturne.
+10. rafraîchissement de la recette depuis la prod, neutralisée (runbook) ;
+11. sweep et nettoyage nocturne.
 
 ## 12. Risques
 
-| Risque                                                           | Mitigation                                                                                                 |
-| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Rollback automatique incorrect (restauration CNPG ou volume)     | Testé en phases 1, 2 et 6 ; état en échec conservé ; génération précédente intacte                         |
-| Restauration Longhorn lente sur un gros volume (copie)           | Mesurée en phase 6 et documentée                                                                           |
-| Snapshot ≠ sauvegarde                                            | Sauvegardes nocturnes hors cluster et test de restauration                                                 |
-| Review apps exposées (code des PR, démo)                         | Mot de passe aléatoire, NetworkPolicy, filtre d'accès, prod sur un autre cluster                           |
-| API du cluster exposée, jeton longue durée                       | Role limité au namespace, règles d'environnement, ruleset des tags, rotation ; OIDC ou ARC en durcissement |
-| Commandes Odoo 20 et `click-odoo-update` via l'entrypoint        | Phases 0 et 1, avant le chart                                                                              |
-| Websockets selon l'implémentation Gateway                        | `appProtocol: kubernetes.io/ws`, testé en phase 6                                                          |
-| Pas de haute disponibilité (1 pod, volume RWO)                   | Assumé en v1 et documenté                                                                                  |
-| Run de PR annulé pendant `helm upgrade`                          | `ci/deploy.sh` répare la release bloquée ; aucune annulation des déploiements                              |
-| Base managée (`external`) sans point de restauration automatique | Documenté ; CNPG par défaut                                                                                |
-| Secret changé sans redémarrage d'Odoo                            | Runbook de rotation ; Reloader en option                                                                   |
-| Secret applicatif absent ou clé manquante                        | Vérifié par `ci/deploy.sh` avant l'arrêt ; sinon le pod reste en `CreateContainerConfigError`              |
+| Risque                                                           | Mitigation                                                                                                          |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Remise à zéro déclenchée hors review                             | Rendu refusé hors base `ephemeral` et `environment: review`, refus à l'exécution, droits par namespace, lint (§6.3) |
+| Rollback automatique incorrect (restauration CNPG ou volume)     | Testé en phases 1, 2 et 6 ; état en échec conservé ; génération précédente intacte                                  |
+| Job `migrate` en échec ou trop long                              | `backoffLimit: 0`, délai réglable, logs dans le résumé, rollback automatique                                        |
+| Restauration lente sur un gros volume (selon le stockage)        | Mesurée en phase 6 et documentée                                                                                    |
+| Snapshot ≠ sauvegarde                                            | Sauvegardes hors cluster et test de restauration                                                                    |
+| Fonction du cluster absente ou différente                        | Vérifiée par `ci/deploy.sh` avant toute coupure ; noms des ressources dans les valeurs                              |
+| Copie de la prod en recette sans neutralisation                  | Runbook de rafraîchissement avec `odoo db load -n`                                                                  |
+| Review apps exposées (code des PR, démo)                         | Mot de passe aléatoire, NetworkPolicy, filtre d'accès, prod sur un autre cluster                                    |
+| API du cluster exposée, jeton longue durée                       | Role limité au namespace, règles d'environnement, ruleset des tags, rotation ; OIDC ou ARC en durcissement          |
+| Websockets selon l'implémentation Gateway                        | `appProtocol: kubernetes.io/ws`, testé en phase 6                                                                   |
+| Pas de haute disponibilité (1 pod, volume RWO)                   | Assumé en v1 et documenté                                                                                           |
+| Run de PR annulé pendant `helm upgrade`                          | `ci/deploy.sh` répare la release bloquée ; aucune annulation des déploiements                                       |
+| Base managée (`external`) sans point de restauration automatique | Documenté ; CNPG par défaut                                                                                         |
+| Secret changé sans redémarrage d'Odoo                            | Runbook de rotation ; Reloader en option                                                                            |
+| Secret applicatif absent ou clé manquante                        | Vérifié par `ci/deploy.sh` avant l'arrêt ; sinon le pod reste en `CreateContainerConfigError`                       |
 
 ## 13. Hors périmètre (v1)
 
 - environnement `testing` ;
+- installation ou configuration des composants du cluster ;
 - mise à zéro des review apps inactives (KEDA HTTP, Sablier) ;
 - variante Argo CD ;
-- rafraîchissement automatique de la recette depuis la prod ;
+- rafraîchissement automatique de la recette depuis la prod (runbook en v1) ;
 - haute disponibilité et page de maintenance ;
 - mise à jour en ligne, avec l'ancien pod en parallèle ;
 - review apps construites depuis une copie neutralisée de la prod.
 
 ## Mise en œuvre
 
-- Branche `20.0-k8s-deployment` (worktree `.claude/worktrees/k8s`), créée depuis `20.0`
-  (`2db0119`).
-- Phase 0 sur une branche de travail issue de `20.0`. L'utilisateur la fusionne, puis
-  `20.0-k8s-deployment` est rebasée sur `20.0`.
+- Branche `20.0-k8s-deployment` (worktree `.claude/worktrees/k8s`), créée depuis `20.0`.
+- Phases 0 et 0 bis sur des branches de travail issues de `20.0`. L'utilisateur les
+  fusionne, puis `20.0-k8s-deployment` est rebasée sur `20.0`.
 - Commits depuis l'image de dev (pre-commit) ; pas de push sans accord.
 - Validation réelle :
   - dépôt de test privé `Skilldron/test-odoo-template` (remote `test`), supprimé après
