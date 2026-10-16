@@ -21,6 +21,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
+          cache: npm
+      # .prettierrc.yml and eslint.config.mjs import their plugins from the project's
+      # node_modules (as in the dev container, see postCreateCommand)
+      - run: npm ci --no-audit --no-fund
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
