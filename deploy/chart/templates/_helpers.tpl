@@ -16,7 +16,7 @@
 {{- if include "odoo.review" . -}}
 {{ .Release.Name }}-odoo-data-{{ include "odoo.shortDigest" . }}
 {{- else -}}
-{{ .Release.Name }}-odoo-data-{{ .Values.generation }}
+{{ .Release.Name }}-odoo-data-{{ .Values.state.generation }}
 {{- end }}
 {{- end }}
 
@@ -137,8 +137,8 @@ smtp_port = 1025
 {{- if and (ne $v.environment "review") (not $v.secrets.existingSecret) -}}
 {{- fail "secrets.existingSecret is required outside review" -}}
 {{- end -}}
-{{- if and (eq $v.environment "review") $v.restore.filestore -}}
-{{- fail "restore is not available in review" -}}
+{{- if and (eq $v.environment "review") (or $v.state.filestore $v.state.databaseSecret $v.jobs.dbInit.run) -}}
+{{- fail "state and jobs.dbInit are not used in review" -}}
 {{- end -}}
 {{- if not (has $v.database.type (list "ephemeral" "external")) -}}
 {{- fail "database.type must be ephemeral or external" -}}
@@ -213,16 +213,16 @@ capabilities:
 - name: PGPASSWORD
   valueFrom:
     secretKeyRef: {name: {{ include "odoo.generatedSecret" . }}, key: pg-password}
-- name: PGDATABASE
-  value: {{ .Values.database.name | quote }}
 {{- else }}
-{{- $secret := .Values.database.external.secret }}
-{{- range $env, $key := dict "PGHOST" "host" "PGPORT" "port" "PGUSER" "username" "PGPASSWORD" "password" "PGDATABASE" "dbname" }}
+{{- $secret := .Values.state.databaseSecret | default .Values.database.external.secret }}
+{{- range $env, $key := dict "PGHOST" "host" "PGPORT" "port" "PGUSER" "username" "PGPASSWORD" "password" }}
 - name: {{ $env }}
   valueFrom:
     secretKeyRef: {name: {{ $secret }}, key: {{ $key }}}
 {{- end }}
 {{- end }}
+- name: PGDATABASE
+  value: {{ .Values.database.name | quote }}
 - name: ODOO_ADMIN_PASSWD
   valueFrom:
     secretKeyRef: {name: {{ include "odoo.appSecret" . }}, key: admin-passwd}

@@ -1,6 +1,6 @@
 # Defaults shared by every environment. deploy/values/<env>.yaml overrides them; the CI
-# only adds image.digest, the step settings (odoo.replicas, jobs.migrate.run) and, on a
-# rollback, generation and restore. See docs/plans/k8s-deployment.md §6.
+# only adds image.digest, the step settings (odoo.replicas, jobs.*.run) and the state of
+# the environment (state). See docs/plans/k8s-deployment.md §6.
 
 # review | recette | production (required)
 environment: ""
@@ -14,9 +14,6 @@ image:
   digest: ""
   # Names of existing docker-registry Secrets (GHCR)
   pullSecrets: []
-
-# Integer suffix of the recette/prod filestore volume, increased by a rollback (§3.3)
-generation: 1
 
 odoo:
   # 0 or 1, set by ci/deploy.sh at each step
@@ -50,10 +47,17 @@ jobs:
     run: false
     activeDeadlineSeconds: 1800
     ttlSecondsAfterFinished: 604800
+  # Recette, production: odoo db init creates Odoo's database with the admin password of
+  # the application Secret, and refuses an existing one. Run by ci/deploy.sh until
+  # state.initialized (review: first step of the migrate Job, with the demo data).
+  dbInit:
+    run: false
+    activeDeadlineSeconds: 600
 
 secrets:
-  # Application Secret (keys admin-passwd, optional smtp-password). Required outside
-  # review; in review the chart generates its own Secret.
+  # Application Secret (keys admin-passwd, admin-user-password for the first deployment,
+  # optional smtp-password). Required outside review; in review the chart generates its
+  # own Secret.
   existingSecret: ""
   # Secrets of the modules, as environment variables: [{name, secret, key}]
   env: []
@@ -62,7 +66,7 @@ database:
   # ephemeral (review only, created by this chart) | external (recette, production: a
   # database installed apart, e.g. with the CloudNativePG "cluster" chart)
   type: external
-  # Database name of the ephemeral database
+  # Name of Odoo's database, created by odoo db init (migrate Job)
   name: odoo
   ephemeral:
     image: postgres:18
@@ -72,8 +76,9 @@ database:
       requests: {cpu: 100m, memory: 256Mi}
       limits: {memory: 1Gi}
   external:
-    # Secret with the keys host, port, username, password, dbname: the <cluster>-app
-    # Secret of CNPG, or a Secret created with the same keys for another database
+    # Secret with the keys host, port, username, password: the <cluster>-app Secret of
+    # CNPG, or a Secret created with the same keys for another database. Its role needs
+    # CREATEDB: Odoo creates its database (database.name) at the first deployment.
     secret: ""
     # Name of the CNPG Cluster, when the database is one: ci/deploy.sh then takes a
     # database restore point before each update. Not used by the templates.
@@ -83,9 +88,19 @@ snapshots:
   # VolumeSnapshotClass of the filestore restore points (used by ci/deploy.sh)
   volumeSnapshotClass: ""
 
-# Set by a rollback, with generation + 1: VolumeSnapshot of the filestore to restore from
-restore:
+# State of a recette or production environment, written by ci/deploy.sh and
+# ci/deploy-rollback.sh, read back from the release and carried over by every deployment.
+# Never set in deploy/values/<env>.yaml.
+state:
+  # Odoo's database exists (odoo db init done)
+  initialized: false
+  # Suffix of the filestore volume, increased by a restoration (§3.3)
+  generation: 1
+  # VolumeSnapshot the current filestore volume was created from
   filestore: ""
+  # Database restored by the runbook: its Secret and CNPG Cluster replace database.external
+  databaseSecret: ""
+  cnpgCluster: ""
 
 mailpit:
   enabled: false

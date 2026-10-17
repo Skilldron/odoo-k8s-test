@@ -1,0 +1,43 @@
+{{- /*
+Job db-init (recette, production): odoo db init creates Odoo's database with the admin
+password of the application Secret, without demo data. It refuses an existing database
+("exists, aborting"): ci/deploy.sh then takes the database as already created. Named after
+the Helm revision, so that a new attempt is a new Job; the next step no longer renders it.
+*/ -}}
+{{- if .Values.jobs.dbInit.run }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-db-init-{{ .Release.Revision }}
+  labels:
+    {{- include "odoo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-init
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.jobs.dbInit.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "odoo.labels" . | nindent 8 }}
+        app.kubernetes.io/component: db-init
+    spec:
+      {{- include "odoo.podCommon" . | nindent 6 }}
+      restartPolicy: Never
+      containers:
+        - name: db-init
+          image: {{ include "odoo.image" . }}
+          args: [odoo, db, init, --password, $(ODOO_INIT_ADMIN_PASSWORD), $(PGDATABASE)]
+          env:
+            {{- include "odoo.env" . | nindent 12 }}
+            - name: ODOO_INIT_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ include "odoo.appSecret" . }}, key: admin-user-password}
+          resources:
+            {{- toYaml .Values.odoo.resources | nindent 12 }}
+          securityContext:
+            {{- include "odoo.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            {{- include "odoo.volumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "odoo.volumes" . | nindent 8 }}
+{{- end }}

@@ -6,6 +6,8 @@
 #
 # Creates the Cluster "odoo-db" and the Secret "odoo-db-app", read by Odoo
 # (database.external.secret and database.external.cnpgCluster in deploy/values/<env>.yaml).
+# The role odoo gets CREATEDB: Odoo creates its own database at the first deployment
+# (odoo db init, with the admin password of the application Secret); "app" stays empty.
 # Requires the CNPG operator, the Barman Cloud plugin, a Secret "odoo-db-s3" with the keys
 # ACCESS_KEY_ID and ACCESS_SECRET_KEY, and a storage class with volume snapshots (Longhorn:
 # longhorn-volumesnapshotclass.yaml).
@@ -33,8 +35,10 @@ cluster:
   # A single instance: a PodDisruptionBudget would block node drains
   enablePDB: false
   initdb:
-    database: odoo
+    database: app
     owner: odoo
+    postInitSQL:
+      - ALTER ROLE odoo CREATEDB
   plugins:
     - name: barman-cloud.cloudnative-pg.io
       isWALArchiver: true

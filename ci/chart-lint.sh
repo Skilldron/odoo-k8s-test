@@ -54,14 +54,23 @@ for env in review recette production; do
         fail "kubeconform $env"
     fi
 done
-render recette --set generation=2 --set restore.filestore=fs-snap \
-    --set database.external.secret=odoo-db-2-app >"$work/rollback.yaml"
+render recette --set state.generation=2 --set state.filestore=fs-snap \
+    --set state.databaseSecret=odoo-db-2-app >"$work/rollback.yaml"
 if grep -q "name: odoo-odoo-data-2" "$work/rollback.yaml" &&
     grep -q "name: fs-snap" "$work/rollback.yaml" &&
     grep -q "name: odoo-db-2-app" "$work/rollback.yaml"; then
     pass "rollback render (filestore generation 2 from its snapshot, restored database)"
 else
     fail "rollback render"
+fi
+render production --set jobs.dbInit.run=true >"$work/first.yaml"
+# shellcheck disable=SC2016 # $(VAR) is expanded by Kubernetes, not by the shell
+if grep -q 'name: odoo-db-init-1$' "$work/first.yaml" &&
+    grep -qF 'args: [odoo, db, init, --password, $(ODOO_INIT_ADMIN_PASSWORD), $(PGDATABASE)]' \
+        "$work/first.yaml" && grep -q 'key: admin-user-password' "$work/first.yaml"; then
+    pass "first deployment render (db-init Job without demo, admin password of the application Secret)"
+else
+    fail "first deployment render"
 fi
 
 # 2. odoo.conf generated from deploy/chart/tests/config-values.yaml
@@ -108,7 +117,8 @@ refused "SMTP overridden while Mailpit is enabled" review --set odoo.config.opti
 refused "option also set by secrets.env" recette --set odoo.config.queue_job.http_auth_user=u \
     --set-json 'secrets.env=[{"name":"ODOO_QUEUE_JOB_HTTP_AUTH_USER","secret":"s","key":"k"}]'
 refused "image referenced by tag" recette --set image.digest=latest
-refused "restore in review" review --set restore.filestore=x
+refused "restored state in review" review --set state.filestore=x
+refused "db-init Job in review" review --set jobs.dbInit.run=true
 
 # 5. No destructive command in any render; reviews only reset through their volumes
 if grep -nEw 'dropdb|rm' "$work"/*.yaml || grep -nE 'DROP DATABASE|--force' "$work"/*.yaml; then

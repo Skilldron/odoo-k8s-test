@@ -22,7 +22,7 @@ spec:
   resources:
     requests:
       storage: {{ .Values.odoo.persistence.size }}
-  {{- with .Values.restore.filestore }}
+  {{- with .Values.state.filestore }}
   dataSource:
     name: {{ . }}
     kind: VolumeSnapshot

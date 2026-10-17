@@ -37,7 +37,6 @@
         "pullSecrets": {"type": "array", "items": {"type": "string"}}
       }
     },
-    "generation": {"type": "integer", "minimum": 1},
     "odoo": {
       "type": "object",
       "properties": {
@@ -62,6 +61,13 @@
             "run": {"type": "boolean"},
             "activeDeadlineSeconds": {"type": "integer", "minimum": 60},
             "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0}
+          }
+        },
+        "dbInit": {
+          "type": "object",
+          "properties": {
+            "run": {"type": "boolean"},
+            "activeDeadlineSeconds": {"type": "integer", "minimum": 60}
           }
         }
       }
@@ -99,10 +105,16 @@
         }
       }
     },
-    "restore": {
+    "state": {
       "type": "object",
       "additionalProperties": false,
-      "properties": {"filestore": {"type": "string"}}
+      "properties": {
+        "initialized": {"type": "boolean"},
+        "generation": {"type": "integer", "minimum": 1},
+        "filestore": {"type": "string"},
+        "databaseSecret": {"type": "string"},
+        "cnpgCluster": {"type": "string"}
+      }
     },
     "mailpit": {
       "type": "object",

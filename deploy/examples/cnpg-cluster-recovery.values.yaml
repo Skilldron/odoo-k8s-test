@@ -16,5 +16,7 @@ recovery:
   # The CNPG Backup of the restore point (method volumeSnapshot, same namespace)
   method: backup
   backupName: ""
-  database: odoo
+  # Same as the failed cluster (Secret odoo-db-2-app); Odoo's database comes with the
+  # snapshot
+  database: app
   owner: odoo
