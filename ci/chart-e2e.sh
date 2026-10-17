@@ -8,8 +8,9 @@
 #
 # Builds two variants of the prod image (dev_sample with a new field, then with a broken
 # view) and runs: review install, restart, new image (reset); guards; recette first
-# install, update with restore point, broken update, then the restore runbook (database
-# recovered to the restore point in a new cluster, filestore from its snapshot).
+# install, update with restore point (refused while the database has no volumeSnapshot
+# section), broken update, then the restore runbook (database recovered from its volume
+# snapshot in a new cluster, filestore from its snapshot).
 #
 # Uses its own kubeconfig and Helm home: the current kubectl context and Helm repositories
 # are never touched.
@@ -189,6 +190,7 @@ install_database() { # install_database <ns> <release> [helm args...]
         --version "$CNPG_CLUSTER_CHART_VERSION" -n "$ns" \
         -f deploy/examples/cnpg-cluster.values.yaml \
         --set fullnameOverride="$release" --set cluster.storage.size=2Gi \
+        --set cluster.storage.storageClass=csi-hostpath-sc \
         --set backups.endpointURL=http://minio.minio:9000 \
         --set backups.destinationPath="s3://backups/$ns/" \
         --set backups.wal.encryption= --set backups.data.encryption= "$@" >/dev/null ||
@@ -294,18 +296,31 @@ deploy() { # deploy <ns> <release> <env> <digest> [helm args...]: stop, migrate,
     start_odoo "$@"
 }
 
-restore_point() { # restore_point <ns> <release> <generation> <name>, Odoo at 0:
-    # database backup through the Barman Cloud plugin (the CNPG cluster chart cannot
-    # configure volume snapshot backups), filestore VolumeSnapshot; the restore point time
-    # is written to $work/<name>.time, the database recovery target
+enable_snapshots() { # enable_snapshots <ns> <cluster>: the administrator's patch after every
+    # install or recovery of the database (the CNPG cluster chart cannot set this section)
+    kubectl -n "$1" patch "cluster/$2" --type merge -p \
+        "{\"spec\":{\"backup\":{\"volumeSnapshot\":{\"className\":\"$SNAPCLASS\",\"online\":false}}}}" >/dev/null
+}
+
+snapshots_enabled() { # snapshots_enabled <ns> <cluster>: preflight of a deployment, before
+    # Odoo stops; ci/deploy.sh refuses to go on without it
+    [ -n "$(kubectl -n "$1" get "cluster/$2" -o jsonpath='{.spec.backup.volumeSnapshot.className}')" ] &&
+        return 0
+    echo "    cluster $2 has no spec.backup.volumeSnapshot: see deploy/examples/cnpg-cluster.values.yaml" >&2
+    return 1
+}
+
+restore_point() { # restore_point <ns> <release> <generation> <name>, Odoo at 0: cold volume
+    # snapshot of the database (CNPG Backup, the instance is fenced meanwhile) and
+    # VolumeSnapshot of the filestore
     kubectl apply -f - >/dev/null <<EOF || return 1
 apiVersion: postgresql.cnpg.io/v1
 kind: Backup
 metadata: {name: $4, namespace: $1}
 spec:
   cluster: {name: $db_cluster}
-  method: plugin
-  pluginConfiguration: {name: barman-cloud.cloudnative-pg.io}
+  method: volumeSnapshot
+  online: false
 ---
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshot
@@ -315,13 +330,12 @@ spec:
   source: {persistentVolumeClaimName: $2-odoo-data-$3}
 EOF
     kubectl -n "$1" wait "backup/$4" --for=jsonpath='{.status.phase}'=completed --timeout=600s >/dev/null &&
-        kubectl -n "$1" wait "volumesnapshot/$4-filestore" --for=jsonpath='{.status.readyToUse}'=true --timeout=300s >/dev/null || return 1
-    sleep 2
-    date -u +%Y-%m-%dT%H:%M:%SZ >"$work/$4.time"
+        kubectl -n "$1" wait "volumesnapshot/$4-filestore" --for=jsonpath='{.status.readyToUse}'=true --timeout=300s >/dev/null &&
+        kubectl -n "$1" wait "cluster/$db_cluster" --for=condition=Ready --timeout=300s >/dev/null
 }
 
 archive_current_wal() { # archive_current_wal <ns> <cluster>: closes the current WAL segment
-    # and waits until it is archived, so a recovery can reach any time before now
+    # and waits until it is archived (Barman continuous archiving works)
     local segment
     segment="$(kubectl -n "$1" exec "$2-1" -c postgres -- psql -U postgres -tAc \
         "select pg_walfile_name(pg_switch_wal())")" || return 1
@@ -446,8 +460,15 @@ rpc $ns $rel $admin_pw "call('res.partner', 'create', {'name': 'before-update'})
 check "recette : données saisies" equals "$(marker_count $ns $rel $admin_pw before-update)" 1
 
 log "Recette: update with restore point"
+check "garde-fou : base sans section volumeSnapshot, déploiement refusé" \
+    fails snapshots_enabled $ns $db_cluster
+check "garde-fou : Odoo toujours en marche" \
+    equals "$(kubectl -n $ns get deploy $rel -o jsonpath='{.spec.replicas}')" 1
+check "recette : patch volumeSnapshot de la base (administrateur)" enable_snapshots $ns $db_cluster
+check "recette : helm upgrade de la base" install_database $ns odoo-db --set backups.retentionPolicy=31d
+check "recette : patch conservé par helm upgrade" snapshots_enabled $ns $db_cluster
 stop_odoo $ns $rel recette "$DIGEST_A"
-check "recette : point de restauration rp-1 (sauvegarde Barman + filestore)" \
+check "recette : point de restauration rp-1 (snapshots à froid de la base et du filestore)" \
     restore_point $ns $rel 1 rp-1
 check "recette : mise à jour (Job migrate)" run_migrate $ns $rel recette "$DIGEST_B"
 check "recette : démarrage" start_odoo $ns $rel recette "$DIGEST_B"
@@ -459,19 +480,21 @@ rpc $ns $rel $admin_pw "call('res.partner', 'create', {'name': 'after-update'})"
 log "Recette: broken module, Odoo stays stopped"
 stop_odoo $ns $rel recette "$DIGEST_B"
 check "recette : point de restauration rp-2" restore_point $ns $rel 1 rp-2
-# A write after the restore point, which the recovery must not bring back
+# A write after the restore point, which the restore must not bring back
 kubectl -n $ns exec $db_cluster-1 -c postgres -- psql -U postgres -d odoo -qc \
     "create table e2e_after_restore_point (id int)"
 check "recette : module cassé, Job migrate en échec" fails run_migrate $ns $rel recette "$DIGEST_C"
 tail -3 "$work/job.log" | sed 's/^/    /'
 check "recette : Odoo reste arrêté" \
     equals "$(kubectl -n $ns get deploy $rel -o jsonpath='{.spec.replicas}')" 0
-check "recette : dernier WAL archivé" archive_current_wal $ns $db_cluster
 
-log "Recette: restore runbook (database odoo-db-2 at the restore point, filestore generation 2)"
-check "runbook : base odoo-db-2 restaurée à l'heure de rp-2 ($(cat "$work/rp-2.time"))" \
+log "Recette: restore runbook (database odoo-db-2 from the snapshot rp-2, filestore generation 2)"
+check "runbook : base odoo-db-2 restaurée depuis le point rp-2" \
     install_database $ns odoo-db-2 -f deploy/examples/cnpg-cluster-recovery.values.yaml \
-    --set recovery.pitrTarget.time="$(cat "$work/rp-2.time")"
+    --set recovery.backupName=rp-2
+check "runbook : volume de odoo-db-2 créé depuis le snapshot" \
+    equals "$(kubectl -n $ns get pvc odoo-db-2-1 -o jsonpath='{.spec.dataSource.name}')" rp-2
+check "runbook : patch volumeSnapshot de odoo-db-2" enable_snapshots $ns odoo-db-2
 db_cluster=odoo-db-2
 rollback=(--set generation=2 --set restore.filestore=rp-2-filestore
     --set database.external.secret=odoo-db-2-app --set database.external.cnpgCluster=odoo-db-2)
@@ -488,6 +511,7 @@ check "runbook : base en échec et ancien filestore conservés" \
 check "runbook : filestore créé depuis le snapshot" \
     equals "$(kubectl -n $ns get pvc $rel-odoo-data-2 -o jsonpath='{.spec.dataSource.name}')" rp-2-filestore
 check "runbook : archivage des WAL de odoo-db-2" archive_current_wal $ns odoo-db-2
+check "runbook : déploiement suivant possible (contrôle préalable)" snapshots_enabled $ns odoo-db-2
 
 {
     echo "### Chart Helm, scénarios e2e (kind)"

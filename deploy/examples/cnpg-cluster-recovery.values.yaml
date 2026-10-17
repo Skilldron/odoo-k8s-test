@@ -1,32 +1,20 @@
-# Runbook "restore the database" after a failed update: a new cluster, odoo-db-2, recovered
-# from the object store to the time of the restore point (given by the CI summary). The
-# failed cluster stays in place for analysis.
+# Runbook "restore the database" after a failed update: a new cluster, odoo-db-2, created
+# from the volume snapshot of the restore point (its name is given by the CI summary). The
+# failed cluster stays in place for analysis, and so do its snapshots.
 #
 #   helm install odoo-db-2 cluster --repo https://cloudnative-pg.github.io/charts \
 #     --version 0.9.0 -n <project>-prod \
 #     -f deploy/examples/cnpg-cluster.values.yaml \
 #     -f deploy/examples/cnpg-cluster-recovery.values.yaml \
-#     --set fullnameOverride=odoo-db-2 --set recovery.pitrTarget.time=<restore point time>
+#     --set fullnameOverride=odoo-db-2 --set recovery.backupName=<restore point>
 #
-# Then the rollback workflow points Odoo to the Secret odoo-db-2-app.
+# Then, as after every install of the database, the volumeSnapshot patch (see
+# cnpg-cluster.values.yaml) on odoo-db-2, or the next deployment is refused. Finally the
+# rollback workflow points Odoo to the Secret odoo-db-2-app.
 mode: recovery
 recovery:
-  method: plugin
-  # serverName of the failed cluster in the object store (its cluster name)
-  clusterName: odoo-db
+  # The CNPG Backup of the restore point (method volumeSnapshot, same namespace)
+  method: backup
+  backupName: ""
   database: odoo
   owner: odoo
-  pitrTarget:
-    # RFC 3339, e.g. 2026-10-16T19:28:43Z
-    time: ""
-  pluginConfiguration:
-    name: barman-cloud.cloudnative-pg.io
-    parameters:
-      # ObjectStore of the failed cluster (created by its release)
-      barmanObjectName: odoo-db-backups
-  objectStore:
-    create: false
-  # Same S3 credentials Secret as the failed cluster
-  secret:
-    create: false
-    name: odoo-db-s3

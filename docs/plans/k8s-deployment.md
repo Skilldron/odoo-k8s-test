@@ -27,9 +27,9 @@ Décisions prises avec l'utilisateur (2026-10-16) :
 - **la base de recette et de prod est installée à part** (chart CloudNativePG `cluster`
   recommandé, ou toute base PostgreSQL) ; le chart Odoo ne crée de base que pour les
   reviews (`database.type` : `ephemeral` ou `external`) (§6) ;
-- **point de restauration** avant chaque mise à jour (sauvegarde Barman de la base si
-  c'est un cluster CNPG, snapshot du filestore) ; si la mise à jour échoue, **Odoo reste
-  arrêté** et la base se restaure par un **runbook** (§3.3) ;
+- **point de restauration** avant chaque mise à jour (snapshots de volume à froid de la
+  base, si c'est un cluster CNPG, et du filestore) ; si la mise à jour échoue, **Odoo
+  reste arrêté** et la base se restaure par un **runbook** (§3.3) ;
 - **`odoo.conf` généré par le chart** (ConfigMap, sans secret) ; secrets dans des
   Secrets du cluster, lus nativement par Odoo 20 en variables d'environnement. La CI ne
   transmet que l'image (§6.1) ;
@@ -67,7 +67,7 @@ Chaque nuit ─► sweep : review apps de PR fermées restantes
 push release/X.Y.Z | hotfix/X.Y.Z ─► quality ─► image (X.Y.Z-rc.N) ─► recette
 tag vX.Y.Z ─► promote (dernière rc ─► X.Y.Z, même digest) ─► production
     1. helm upgrade, Odoo à 0 replica                               ┐
-    2. point de restauration : base (Barman) + filestore (snapshot) │ coupure
+    2. point de restauration : snapshots de la base et du filestore │ coupure
     3. Job migrate : odoo -i modules, puis click-odoo-update        │
     4. Odoo à 1 replica, smoke HTTPS                                ┘
     échec en 3 ou 4 ─► Odoo reste à 0, runbook de restauration (§3.3)
@@ -142,8 +142,9 @@ ces deux réglages. Le déroulé est le même pour les trois environnements :
    - les fonctions du cluster attendues par les valeurs sont là (CRD Gateway API,
      `VolumeSnapshotClass`, StorageClass, Gateway) ;
    - le Secret applicatif et le Secret de la base existent avec leurs clés (§6.1) ;
-   - si `database.external.cnpgCluster` est donné : le `Cluster` CNPG est prêt et son
-     archivage des WAL fonctionne ;
+   - si `database.external.cnpgCluster` est donné : le `Cluster` CNPG est prêt, son
+     archivage des WAL fonctionne et il a sa section `spec.backup.volumeSnapshot` (patch
+     de l'administrateur, §4) ; sans elle, pas de point de restauration possible ;
    - le rendu passe (`helm upgrade --dry-run=server`).
 
    Si quelque chose manque, on s'arrête ici avec un message clair, sans coupure.
@@ -155,10 +156,10 @@ ces deux réglages. Le déroulé est le même pour les trois environnements :
 3. **Point de restauration** (recette et prod, sauf premier déploiement), étiqueté avec
    le digest en cours et le digest visé :
    - base, si c'est un cluster CNPG (`database.external.cnpgCluster`) : `Backup` CNPG
-     `method: plugin` (Barman Cloud), créé par la CI sans toucher à la release de la
-     base. Odoo est arrêté : la base ne bouge plus. La CI note l'heure T de fin de
-     sauvegarde, cible de la restauration. Le chart CNPG ne permet pas de configurer les
-     sauvegardes `volumeSnapshot` (`spec.backup.volumeSnapshot`), d'où Barman ;
+     `method: volumeSnapshot`, `online: false`, créé par la CI sans toucher à la release
+     de la base. CNPG met l'instance en pause le temps du snapshot : copie cohérente,
+     sans WAL à rejouer. Sur un stockage copy-on-write, la durée ne dépend pas de la
+     taille de la base, contrairement à une sauvegarde Barman complète ;
    - base d'un autre type : pas de point de restauration de la base, la CI le signale ;
    - filestore : `VolumeSnapshot` du volume `/var/lib/odoo` ;
    - attente de la fin des deux. On garde les 3 derniers points (réglable).
@@ -167,10 +168,9 @@ ces deux réglages. Le déroulé est le même pour les trois environnements :
    échec du Job fait échouer le déploiement, avec ses logs dans le résumé.
 5. **Démarrage** : `helm upgrade` avec `odoo.replicas=1 --wait`, puis smoke test :
    `/web/health` et `/web/login` en HTTPS sur l'hôte public. La coupure prend fin.
-6. **Échec en 4 ou 5** (recette, prod) : Odoo reste à 0, le dernier WAL est archivé
-   (`pg_switch_wal`), et le job échoue. Le résumé donne les logs du Job, le point de
-   restauration (nom et heure T), le digest précédent et les commandes du runbook
-   (§3.3).
+6. **Échec en 4 ou 5** (recette, prod) : Odoo reste à 0 et le job échoue. Le résumé
+   donne les logs du Job, le nom du point de restauration, le digest précédent et les
+   commandes du runbook (§3.3).
 
 Chaque déploiement crée donc trois révisions Helm ; l'historique est limité
 (`--history-max`). Le premier déploiement suit les mêmes étapes, sans point de
@@ -194,11 +194,13 @@ la base telle quelle) et la restauration.
 
 **Runbook de restauration** (deux étapes, chacune par le propriétaire de la ressource) :
 
-1. **Base** (administrateur) : nouveau cluster restauré à l'heure T du point de
-   restauration, avec le chart CNPG `cluster` en `mode: recovery`, méthode `plugin`
+1. **Base** (administrateur) : nouveau cluster créé depuis le snapshot du point de
+   restauration, avec le chart CNPG `cluster` en `mode: recovery`, méthode `backup`
    (`deploy/examples/cnpg-cluster-recovery.values.yaml`) :
-   `helm install odoo-db-2 … --set recovery.pitrTarget.time=<T>`. CNPG ne restaure
-   jamais en place ; le cluster en échec reste pour analyse.
+   `helm install odoo-db-2 … --set recovery.backupName=<point>`, puis le patch
+   `volumeSnapshot` sur `odoo-db-2`, comme après toute installation (§4), sinon le
+   déploiement suivant est refusé. CNPG ne restaure jamais en place ; le cluster en
+   échec reste pour analyse, avec ses snapshots.
 2. **Odoo** (workflow `rollback`) : `helm upgrade` avec le **digest précédent**,
    `database.external.secret=odoo-db-2-app`, la génération `g+1` du filestore créée
    depuis son `VolumeSnapshot` (`restore.filestore`), puis Odoo à 1 et smoke test. Pas
@@ -280,7 +282,10 @@ cités sont des exemples. `ci/deploy.sh` vérifie ces fonctions avant de déploy
 
 7. Un **CSI qui gère les `VolumeSnapshot`** : CRD `snapshot.storage.k8s.io`,
    snapshot-controller et une `VolumeSnapshotClass` (Longhorn, Rook-Ceph, CSI du
-   fournisseur cloud…), de préférence en `deletionPolicy: Retain`.
+   fournisseur cloud…), de préférence en `deletionPolicy: Retain`. Elle sert aux points
+   de restauration de la base et du filestore. Avec Longhorn : `type: snap` (snapshot
+   dans le volume), pas `bak` (copie vers la cible de sauvegarde, aussi lente que S3) ;
+   exemple `deploy/examples/longhorn-volumesnapshotclass.yaml`.
 8. Des **StorageClasses** pour le filestore, la base et les reviews
    (`reclaimPolicy: Delete` conseillé pour les reviews). Le chart les prend par nom dans
    les valeurs.
@@ -293,7 +298,15 @@ cités sont des exemples. `ci/deploy.sh` vérifie ces fonctions avant de déploy
     automatique : l'opérateur **CloudNativePG 1.30**, son **plugin Barman Cloud** (qui
     demande cert-manager) et le chart **`cnpg/cluster`** (exemple de valeurs dans
     `deploy/examples/cnpg-cluster.values.yaml` : rôle Odoo non superutilisateur,
-    propriétaire de la base, archivage et sauvegarde nocturne vers S3).
+    propriétaire de la base, archivage et sauvegarde nocturne vers S3). La base doit
+    être sur une StorageClass à snapshots.
+    - **Après chaque installation de la base, restauration comprise**, l'administrateur
+      ajoute la section `spec.backup.volumeSnapshot` (`online: false`) par un
+      `kubectl patch` documenté dans l'exemple. Le chart `cnpg/cluster` 0.9.0 ne sait
+      pas l'écrire
+      ([cloudnative-pg/charts#900](https://github.com/cloudnative-pg/charts/issues/900))
+      ; `helm upgrade` la conserve (vérifié avec Helm 4). Quand le chart la gérera, le
+      patch deviendra une valeur.
 11. Un **bucket S3 hors du cluster** et ses identifiants, un dossier par environnement.
 12. Le chart Odoo lit la connexion dans un Secret aux clés `host`, `port`, `username`,
     `password`, `dbname` : le Secret `<cluster>-app` de CNPG, ou un Secret créé avec les
@@ -348,8 +361,7 @@ cités sont des exemples. `ci/deploy.sh` vérifie ces fonctions avant de déploy
     namespace. Le modèle documente les permissions nécessaires et fournit un Role de
     référence (`deploy/examples/ci-access.yaml`) que l'administrateur applique ou adapte
     : ressources du chart, `jobs`, `deployments/scale`, `volumesnapshots`, création et
-    lecture des `backups` CNPG, lecture des `clusters` CNPG, et `pods/exec` sur
-    l'instance pour archiver le dernier WAL.
+    lecture des `backups` CNPG et lecture des `clusters` CNPG.
     - `deploy/examples/ci-kubeconfig.sh` produit son kubeconfig.
     - L'OIDC est un durcissement possible, selon le fournisseur.
 20. **Environnements GitHub** `review`, `recette` et `production` :
@@ -630,7 +642,7 @@ L'image ne change pas pour Kubernetes, en dehors des phases 0 et 0 bis.
 | Script                               | Rôle                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ci/deploy.sh ENV IMAGE@DIGEST`      | Valeurs de `deploy/values/ENV.yaml`, plus le digest. Vérification des pré-requis, puis étapes du §3.2 (arrêt, point de restauration, Job, démarrage, smoke HTTPS) ; en cas d'échec, Odoo reste à 0 et le résumé donne le runbook. Plafond des reviews. Répare une release bloquée en « pending ». Résumé du job avec les logs du Job. |
-| `ci/deploy-snapshot.sh`              | Point de restauration : `Backup` CNPG `method: plugin` et heure T si `database.external.cnpgCluster`, `VolumeSnapshot` du filestore ; attente, rétention                                                                                                                                                                              |
+| `ci/deploy-snapshot.sh`              | Point de restauration : `Backup` CNPG `method: volumeSnapshot` à froid si `database.external.cnpgCluster`, `VolumeSnapshot` du filestore ; attente, rétention                                                                                                                                                                         |
 | `ci/deploy-rollback.sh POINT SECRET` | Étape Odoo du runbook (§3.3) : digest précédent, Secret de la base restaurée, génération + 1 du filestore ; appelé par le workflow `rollback`                                                                                                                                                                                         |
 | `ci/review-remove.sh N`              | `helm uninstall pr-<n>`                                                                                                                                                                                                                                                                                                               |
 | `ci/review-sweep.sh`                 | Review apps des PR fermées (API GitHub) ; `DRY_RUN` et liste de PR factice pour les tests                                                                                                                                                                                                                                             |
@@ -675,8 +687,10 @@ que des exemples liés au projet, à appliquer ou adapter par l'administrateur :
 - `registry-secret.sh` : crée le secret de registre GHCR dans un namespace ;
 - `cnpg-cluster.values.yaml` : base de recette ou de prod avec le chart `cnpg/cluster`
   (PG 18, plugin Barman Cloud, sauvegarde nocturne, un dossier S3 par environnement) ;
-- `cnpg-cluster-recovery.values.yaml` : restauration de la base à l'heure d'un point de
+- `cnpg-cluster-recovery.values.yaml` : base restaurée depuis le snapshot d'un point de
   restauration (runbook §3.3) ;
+- `longhorn-volumesnapshotclass.yaml` : `VolumeSnapshotClass` Longhorn des points de
+  restauration (`type: snap`) ;
 - `database-networkpolicy.yaml` : entrée de la base autorisée aux pods Odoo, à
   l'opérateur CNPG et au plugin.
 
@@ -802,15 +816,21 @@ plus la base de recette ni de prod : `database.type` vaut `ephemeral` (review) o
 `external` (Secret existant). Les résultats de phase 2 sur le `Cluster` CNPG du chart
 (`inheritedMetadata`, `serverName`) ne le concernent plus ; le second reste une règle
 d'exploitation : un dossier Barman par environnement. `ci/chart-lint.sh` : 26 contrôles
-sur 26. `ci/chart-e2e.sh` : 37 scénarios sur 37 (recette sur une base installée avec le
-chart `cnpg/cluster` 0.9.0, runbook de restauration compris). Écarts et corrections :
+sur 26. `ci/chart-e2e.sh` : 44 scénarios sur 44 (recette sur une base installée avec le
+chart `cnpg/cluster` 0.9.0, contrôle préalable du patch, runbook de restauration depuis
+le snapshot compris). Écarts et corrections :
 
-- **Point de restauration par sauvegarde Barman, plus par snapshot de volume** : le
-  chart `cnpg/cluster` ne sait pas configurer `spec.backup.volumeSnapshot`. Le point de
-  restauration est une `Backup` `method: plugin` prise Odoo arrêté, plus l'heure T de
-  fin ; la restauration est une PITR à T (`mode: recovery`, `pitrTarget.time`).
-- **WAL courant archivé après l'échec** (`pg_switch_wal()`), sinon la PITR à T peut
-  manquer le dernier segment.
+- **Point de restauration par snapshot de volume à froid** : le chart `cnpg/cluster` ne
+  sait pas écrire `spec.backup.volumeSnapshot`
+  ([#900](https://github.com/cloudnative-pg/charts/issues/900)). Une première version
+  passait par une sauvegarde Barman et une PITR, écartée : sur 100 à 200 Go, elle
+  enverrait toute la base vers S3 à chaque déploiement et la retéléchargerait à chaque
+  restauration. L'administrateur ajoute la section par `kubectl patch` après chaque
+  installation de la base ; essai sur kind : le patch survit à `helm upgrade` (mêmes
+  valeurs, valeurs changées, `--reuse-values`), car Helm 4 applique côté serveur et ne
+  gère pas ce champ. La restauration passe par le chart (`recovery.method: backup`) ; la
+  base restaurée n'hérite pas du patch, d'où l'étape dans le runbook et le contrôle
+  préalable de la CI.
 - **Chiffrement côté serveur** : le chart `cnpg/cluster` demande `AES256` par défaut ;
   MinIO sans KMS refuse alors tout envoi et l'archivage échoue sans bloquer le `Ready`
   du `Cluster`. L'e2e le désactive et attend `ContinuousArchiving` ; l'exemple le

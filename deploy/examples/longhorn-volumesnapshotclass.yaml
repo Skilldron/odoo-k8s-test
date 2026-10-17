@@ -1,0 +1,17 @@
+# VolumeSnapshotClass for the restore points (database and filestore) on Longhorn, named as
+# snapshots.volumeSnapshotClass in deploy/values/<env>.yaml. Requires the snapshot CRDs and
+# snapshot-controller (external-snapshotter).
+#   kubectl apply -f deploy/examples/longhorn-volumesnapshotclass.yaml
+#
+# type: snap keeps the snapshot inside the Longhorn volume: fast to take and to restore.
+# type: bak would upload a copy to the Longhorn backup target, as slow as a restore from S3.
+# A snap snapshot disappears with its volume: the restore points of a database live as long
+# as its cluster (off-site copies are the nightly Barman backups).
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: csi-snapclass
+driver: driver.longhorn.io
+deletionPolicy: Retain
+parameters:
+  type: snap

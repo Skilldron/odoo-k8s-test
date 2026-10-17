@@ -6,8 +6,17 @@
 #
 # Creates the Cluster "odoo-db" and the Secret "odoo-db-app", read by Odoo
 # (database.external.secret and database.external.cnpgCluster in deploy/values/<env>.yaml).
-# Requires the CNPG operator, the Barman Cloud plugin and a Secret "odoo-db-s3" with the keys
-# ACCESS_KEY_ID and ACCESS_SECRET_KEY.
+# Requires the CNPG operator, the Barman Cloud plugin, a Secret "odoo-db-s3" with the keys
+# ACCESS_KEY_ID and ACCESS_SECRET_KEY, and a storage class with volume snapshots (Longhorn:
+# longhorn-volumesnapshotclass.yaml).
+#
+# Then, after every install of the database (including a recovery), enable the cold volume
+# snapshots of the restore points. The chart cannot set this section
+# (https://github.com/cloudnative-pg/charts/issues/900); helm upgrade keeps it. Without it
+# the CI refuses to deploy, before stopping Odoo.
+#
+#   kubectl -n <project>-prod patch cluster odoo-db --type merge -p \
+#     '{"spec":{"backup":{"volumeSnapshot":{"className":"csi-snapclass","online":false}}}}'
 fullnameOverride: odoo-db
 type: postgresql
 version:
@@ -18,6 +27,7 @@ cluster:
   instances: 1
   storage:
     size: 20Gi
+    # Must support volume snapshots (restore points); "" = the default class
     storageClass: ""
   enableSuperuserAccess: false
   # A single instance: a PodDisruptionBudget would block node drains
