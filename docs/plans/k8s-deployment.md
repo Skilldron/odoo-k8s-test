@@ -25,8 +25,9 @@ Décisions prises avec l'utilisateur (2026-10-16) :
   seul `entrypoint.sh` reste dans l'image ;
 - **aucune commande de suppression de données dans le chart** : la remise à zéro d'une
   review vient de volumes neufs à chaque image (noms suffixés par le digest), refusés
-  hors review au rendu (§6.3). Seule exception : le CronJob de rétention supprime les
-  anciens points de restauration, jamais une base ni un volume (§6.4) ;
+  hors review au rendu (§6.3). Seule exception : le hook `validate` supprime les anciens
+  points de restauration (`Backup` et leurs snapshots), jamais une base ni un volume
+  (§6.4) ;
 - **la base de recette et de prod est un cluster CloudNativePG installé à part**,
   obligatoire hors review (pré-requis de la charte) ; le chart Odoo ne crée de base que
   pour les reviews (`database.type` : `ephemeral` ou `external`) (§4, §6) ;
@@ -82,14 +83,18 @@ froid pour le rollback des upgrades Odoo » et sa revue :
 - **filestore** : trois modes, une instance et PVC RWO, plusieurs instances et PVC RWX,
   plusieurs instances avec filestore sur S3 et sessions en base ou Redis sans PVC
   (recommandé en prod) (§3.4) ;
-- **deux ServiceAccounts** : celui des hooks (recréé à chaque mise à jour, peut arrêter
-  Odoo et créer des `Backup`) et celui du CronJob de rétention (permanent, ne peut que
-  lire et supprimer des points) (§6.4) ;
-- **rétention par un CronJob du chart** : ni la CI ni l'administrateur ne purgent ; un
-  point `pending` n'est jamais supprimé. Remplace la décision de phase 3 «
-  l'administrateur purge » (§6.4) ;
-- **`VolumeSnapshotClass` en `deletionPolicy: Delete`**, sinon la purge ne libère pas
-  d'espace (§4) ;
+- **rétention dans le hook `validate`**, sans CronJob : de nouveaux points
+  n'apparaissent qu'aux mises à jour, la purge se fait donc après chaque mise à jour
+  réussie. Elle garde les `keep` plus récents, ne touche jamais un point `pending`
+  complet, et une erreur de purge ne fait pas échouer le hook. Un seul compte, celui des
+  hooks, recréé à chaque mise à jour. Remplace la décision de phase 3 « l'administrateur
+  purge » (§6.4) ;
+- **une `Backup` emporte tout le point** : `snapshotOwnerReference: backup` dans le
+  patch du `Cluster` (snapshot de la base) et `ownerReference` du snapshot du filestore
+  vers la `Backup` (ramasse-miettes de Kubernetes). Supprimer la `Backup` supprime le
+  point entier (§6.4) ;
+- **`VolumeSnapshotClass` en `deletionPolicy: Delete`**, vérifiée par la CI, sinon la
+  purge ne libère pas d'espace (§4) ;
 - **plus de bloc `state`** : sans restauration automatique du filestore, rien n'est
   reporté entre deux déploiements ; la CI ne passe que le digest (§3.3).
 
@@ -107,7 +112,7 @@ froid pour le rollback des upgrades Odoo » et sa revue :
 
 ```
 PR interne non draft ─► quality ─► image (builds:pr-<n>) ─► review
-    helm upgrade --install pr-<n> --wait (namespace <projet>-review)
+    helm upgrade --install pr-<n> (namespace <projet>-review), puis rollout status
         nouvelle image : volumes neufs (base et filestore), les anciens supprimés
         pods Odoo en attente (init container wait-db) tant que la base n'est pas prête
         hook post-install / post-upgrade, Job migrate : db init --with-demo, -i
@@ -117,19 +122,21 @@ Chaque nuit ─► sweep : review apps de PR fermées restantes
 
 push release/X.Y.Z | hotfix/X.Y.Z ─► quality ─► image (X.Y.Z-rc.N) ─► recette
 tag vX.Y.Z ─► promote (dernière rc ─► X.Y.Z, même digest) ─► production
-  job deploy : vérifications, puis helm upgrade --install --wait
+  job deploy : vérifications, puis helm upgrade --install --wait (mise à jour)
     hooks pre-upgrade du chart                                        ┐
       1. stop-snapshot : Odoo à 0, point nommé dans les WAL,          │
-         Backup à froid « pending » (+ snapshot du filestore)         │
-         sauf si une Backup « pending » existe déjà                   │ coupure
+         Backup à froid « pending » (+ snapshot du filestore lié)     │
+         sauf si un point « pending » complet existe déjà            │ coupure
       2. migrate : odoo -i, click-odoo-update                         │
     Helm applique les Deployments : nouvelle image, N réplicas        │
-    hook post-upgrade, validate : « pending » ─► « validated »        ┘
+    hook post-upgrade, validate : « pending » ─► « validated »,       ┘
+      purge au-delà des 3 plus récents (une Backup emporte ses snapshots)
     smoke HTTPS
   job restore (seulement si deploy échoue) :
-    Backup « pending » ─► nouveau cluster CNPG, bascule du Service,
+    point « pending » complet ─► nouveau cluster CNPG, bascule du Service,
     « restored », helm rollback ; aucune « pending » ─► helm rollback seul
-  première installation : hook post-install (db init, -i), pods en attente
+  première installation : helm upgrade --install sans --wait,
+    hook post-install (db init, -i), pods en attente, puis rollout status
 ```
 
 |                      | review                                        | recette                                                                                                               | production                      |
@@ -218,22 +225,31 @@ mise à jour.
    Si quelque chose manque, on s'arrête ici avec un message clair, sans coupure. **Même
    digest déjà déployé** (release `deployed`) : rien à faire, pas de coupure.
 
-2. **`helm upgrade --install --wait --timeout <délai>`** avec `deploy/values/ENV.yaml`
-   et le digest, sans autre valeur. Le délai couvre la plus longue migration attendue.
+2. **`helm upgrade --install --timeout <délai>`** avec `deploy/values/ENV.yaml` et le
+   digest, sans autre valeur. Le délai couvre la plus longue migration attendue.
+   - **Mise à jour de recette ou de prod** : avec `--wait` (stratégie `watcher`), pour
+     que le hook `validate` ne passe qu'une fois les pods prêts.
+   - **Première installation et review** : sans `--wait` (stratégie par défaut de Helm
+     4, `hookOnly`, qui attend les hooks mais pas les ressources), puis
+     `kubectl rollout status`. Avec `--wait`, Helm attend les pods avant de lancer les
+     hooks `post-install`, alors que les pods attendent la base créée par ces hooks :
+     blocage jusqu'au délai (essai du 2026-10-18).
+
    Pas de `--rollback-on-failure` : remettre l'ancienne image sur une base migrée serait
    pire que l'échec ; la restauration passe d'abord par la base (§3.3).
+
 3. **Smoke test** : `/web/health` et `/web/login` en HTTPS sur l'hôte public. Un échec
    ici, pods prêts, met en cause la Gateway : alerte, sans restauration.
 
 **Mise à jour (recette, prod) : hooks du chart.**
 
-| Ordre | Hook                     | Ressource                                                                          | Action                                                                                                                                                                                                                                                                                                                                         |
-| ----- | ------------------------ | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | `pre-upgrade`, poids -10 | ServiceAccount, Role, RoleBinding des hooks ; ConfigMap `<release>-odoo-conf-hook` | Recréés à chaque mise à jour (`before-hook-creation`) : le Job a toujours les droits et l'`odoo.conf` de la nouvelle révision                                                                                                                                                                                                                  |
-| 2     | `pre-upgrade`, poids -5  | Job `stop-snapshot`                                                                | Deployments d'Odoo à 0, attente de la fin des pods ; cluster actif lu dans le sélecteur du Service stable. Si une `Backup` `pending` terminée existe : rien, signalé dans les logs. Sinon : point nommé dans les WAL, `Backup` à froid `<cluster>-preupgrade-r<révision>` étiquetée `pending`, snapshot du filestore s'il est sur PVC, attente |
-| 3     | `pre-upgrade`, poids 0   | Job `migrate`                                                                      | `odoo -i`, `click-odoo-update` (§6.2)                                                                                                                                                                                                                                                                                                          |
-| —     | (Helm)                   | Deployments, ConfigMap, PVC…                                                       | Appliqués seulement si les hooks ont réussi : nouvelle image, N réplicas ; `--wait` attend qu'ils soient prêts                                                                                                                                                                                                                                 |
-| 4     | `post-upgrade`           | Job `validate`                                                                     | La `Backup` `pending` passe `validated`                                                                                                                                                                                                                                                                                                        |
+| Ordre | Hook                     | Ressource                                                                          | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ----- | ------------------------ | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | `pre-upgrade`, poids -10 | ServiceAccount, Role, RoleBinding des hooks ; ConfigMap `<release>-odoo-conf-hook` | Recréés à chaque mise à jour (`before-hook-creation`) : le Job a toujours les droits et l'`odoo.conf` de la nouvelle révision                                                                                                                                                                                                                                                                                                                            |
+| 2     | `pre-upgrade`, poids -5  | Job `stop-snapshot`                                                                | Refus si un point `pending` complet est orphelin (§3.3). Deployments d'Odoo à 0, attente de la fin des pods ; cluster actif lu dans le sélecteur du Service stable. Si un point `pending` complet existe : rien, signalé dans les logs. Sinon : point nommé dans les WAL, `Backup` à froid `<cluster>-preupgrade-r<révision>` étiquetée `pending`, snapshot du filestore rattaché à la `Backup` s'il y a un PVC, attente des deux, puis du primaire prêt |
+| 3     | `pre-upgrade`, poids 0   | Job `migrate`                                                                      | Attente de la base (`pg_isready`), `odoo -i`, `click-odoo-update` (§6.2)                                                                                                                                                                                                                                                                                                                                                                                 |
+| —     | (Helm)                   | Deployments, ConfigMap, PVC…                                                       | Appliqués seulement si les hooks ont réussi : nouvelle image, N réplicas ; `--wait` attend qu'ils soient prêts                                                                                                                                                                                                                                                                                                                                           |
+| 4     | `post-upgrade`           | Job `validate`                                                                     | Le point `pending` complet passe `validated` ; les points `pending` incomplets sont supprimés ; purge des points au-delà de `keep` (§6.4)                                                                                                                                                                                                                                                                                                                |
 
 Si un hook échoue, Helm n'applique rien : les Deployments restent à 0 (mis à 0 par
 `stop-snapshot`, l'ancienne image dans leur spec) et la release est `failed`. Un HPA ne
@@ -251,15 +267,16 @@ Helm. Les Jobs de base tournent donc en hooks `post-*` :
   `post-install` ou `post-upgrade` (`db init --with-demo`, `-i`), sans snapshot ni hook
   `pre-upgrade` ;
 - les pods Odoo démarrent avec la release et attendent dans un init container `wait-db`
-  que la base soit prête : marqueur posé par la dernière étape du Job (empreintes de
-  `click-odoo-update`, à confirmer à l'essai). Après une mise à jour de recette ou de
-  prod, le marqueur existe déjà : l'attente est immédiate ;
+  que la base soit prête : présence du paramètre
+  `module_auto_update.installed_checksums` dans `ir_config_parameter`, écrit par
+  `click-odoo-update` à la fin de sa première passe (vérifié dans l'image). Après une
+  mise à jour de recette ou de prod, il existe déjà : l'attente est immédiate ;
 - volume RWO : le Job et le pod Odoo montent le même PVC et pourraient être placés sur
   deux nœuds, le second restant bloqué. Le Job a une affinité requise avec le nœud du
-  pod Odoo (essai) ;
-- relance d'une première installation en échec : `helm upgrade --install` fait alors une
-  mise à jour (à confirmer avec Helm 4) ; l'étape `db-init` ne tourne que si la base
-  n'existe pas, et « exists, aborting » ne peut pas arrêter le Job.
+  pod Odoo (non testable sur un kind à un nœud : phase 6) ;
+- relance d'une première installation en échec : `helm upgrade --install` fait une mise
+  à jour (vérifié avec Helm 4), donc la chaîne `pre-upgrade` avec un snapshot de la base
+  presque vide ; l'étape `db-init` ne tourne que si la base n'existe pas.
 
 Un déploiement crée une seule révision Helm ; l'historique est limité
 (`--history-max 10`). Au premier déploiement, `odoo db init` crée la base, `odoo -i`
@@ -282,30 +299,48 @@ avec `<préfixe>/backup-type=pre-upgrade`) :
 | `validated` | Job `validate` (`post-upgrade`)     | Mise à jour réussie : le point devient un historique       |
 | `restored`  | Job `restore` de la CI              | Point utilisé pour restaurer : l'incident est clos         |
 
-- Tant qu'une `Backup` `pending` terminée existe, `stop-snapshot` ne prend ni snapshot
-  ni point nommé : une relance après échec garde le point d'avant le premier échec.
-- `validate` passe à `validated` la `Backup` `pending`, quelle que soit sa révision.
-- Une `Backup` en échec (`phase: failed`) ne bloque rien : la migration n'a pas
-  commencé.
-- Si `validate` échoue alors que la mise à jour a réussi, la `Backup` reste `pending` :
-  côté sûr, la mise à jour suivante ne prend pas de nouveau snapshot. On lève le blocage
-  en passant l'étiquette à `validated` à la main (runbook).
-- Le CronJob de rétention ne supprime jamais une `Backup` `pending` (§6.4).
+- **Point complet** : `Backup` en phase `completed` et, s'il y a un PVC, snapshot du
+  filestore `readyToUse` (la `Backup` porte l'annotation `<préfixe>/filestore` avec son
+  nom). La phase de la `Backup` ne concerne que la base ; `stop-snapshot` attend les
+  deux avant de laisser la migration démarrer.
+- Tant qu'un point `pending` complet existe, `stop-snapshot` ne prend ni snapshot ni
+  point nommé : une relance après échec garde le point d'avant le premier échec.
+- Un point `pending` incomplet (snapshot raté, migration non lancée) ne bloque rien et
+  n'est jamais validé : il prendrait la place d'un point valide parmi les `keep`.
+  `validate` le supprime.
+- `validate` passe à `validated` le point `pending` complet, quelle que soit sa
+  révision.
+- **Point orphelin** : si `validate` échoue après une mise à jour réussie, le point
+  reste `pending` alors que la base a changé depuis. Le laisser bloquer les mises à jour
+  suivantes les priverait de point de restauration, et une restauration ramènerait la
+  base trop loin en arrière. Deux gardes :
+  - la CI refuse de déployer si un point `pending` complet existe alors que la release
+    est `deployed` ;
+  - `stop-snapshot`, avant d'arrêter Odoo, refuse si les Deployments sont disponibles
+    avec l'image visée par ce point (annotation `<préfixe>/target-image`), même pour un
+    `helm upgrade` lancé à la main.
+
+  On lève le blocage en passant l'étiquette à `validated` (runbook).
+
+- Le hook `validate` ne supprime jamais un point `pending` complet (§6.4).
 
 **Job `restore` de la CI** (recette, prod ; `ci/deploy-restore.sh ENV`), lancé seulement
 si le job `deploy` a échoué :
 
-1. Cherche la `Backup` `pending` terminée de la release (au plus une, par ses
-   étiquettes) ; son nom est `<cluster>-preupgrade-r<révision>`.
-2. **Aucune** : la base n'a pas été touchée (échec avant la migration). Mise à jour :
+1. Cherche le point `pending` complet de la release (au plus un, par ses étiquettes) ;
+   son nom est `<cluster>-preupgrade-r<révision>`.
+2. **Aucun** : la base n'a pas été touchée (échec avant la migration). Mise à jour :
    `helm rollback` vers la dernière révision `deployed`, Odoo repart sur l'ancienne
-   image. Première installation : rien à restaurer, l'échec est signalé.
+   image. Première installation : rien à restaurer, l'échec est signalé. **Mise à jour
+   appliquée et pods prêts** (seul `validate` a échoué) : pas de restauration, Odoo sert
+   déjà la nouvelle version ; alerte et validation manuelle du point.
 3. **Une** :
    - nouveau cluster `<cluster>-r<révision>` avec le chart `cnpg/cluster` en
      `mode: recovery` (`recovery.method: backup`, `backupName`), valeurs reprises de la
      release du cluster actif (`helm get values`), une instance ; mêmes rôles et Secret
      `odoo-db-credentials`, son propre dossier Barman ;
-   - patch `volumeSnapshot` sur le nouveau cluster (§4), attente de `Ready` ;
+   - attente de `Ready`, puis section `spec.backup.volumeSnapshot` recopiée du cluster
+     actif sur le nouveau (§4), et attente du pod primaire prêt ;
    - bascule du Service stable sur le nouveau cluster ;
    - la `Backup` passe `restored` ;
    - `helm rollback` vers la dernière révision `deployed` : ancienne image, N réplicas.
@@ -344,7 +379,10 @@ cluster. Hors du cluster :
   d'archiver dans un dossier non vide. Cela permet une restauration à un instant donné,
   et en particulier à l'instant d'avant une mise à jour : `recoveryTarget.targetName`
   avec le nom du point de restauration, posé dans les WAL par le Job `stop-snapshot`
-  (§6.2). Rétention de 30 jours dans l'exemple ;
+  (§6.2). CNPG exige alors `backupID`, l'identifiant d'une sauvegarde de base antérieure
+  au point, et le chart `cnpg/cluster` ne rend pas `targetName` : le runbook de sinistre
+  utilise un manifeste `Cluster` brut (vérifié sur kind). Rétention de 30 jours dans
+  l'exemple ;
 - **filestore** : sur PVC, sauvegarde hors cluster recommandée, à la charge de
   l'administrateur avec l'outil de son choix (job récurrent de son stockage, Velero…),
   documentée comme pré-requis recommandé ; sur S3, versioning du bucket obligatoire ;
@@ -412,9 +450,12 @@ cités sont des exemples. `ci/deploy.sh` vérifie ces fonctions avant de déploy
 7. Un **CSI qui gère les `VolumeSnapshot`** : CRD `snapshot.storage.k8s.io`,
    snapshot-controller et une `VolumeSnapshotClass` (Longhorn, Rook-Ceph, CSI du
    fournisseur cloud…) en **`deletionPolicy: Delete`** : supprimer un point de
-   restauration (rétention, §6.4) doit libérer l'espace. Avec `Retain`, le snapshot du
-   stockage resterait, et le supprimer demanderait au chart un ClusterRole. Elle sert
-   aux points de restauration de la base et du filestore. Le snapshot doit être
+   restauration (rétention, §6.4) doit libérer l'espace (vérifié sur kind : le
+   `VolumeSnapshotContent` disparaît). Avec `Retain`, le snapshot du stockage resterait,
+   et le supprimer demanderait au chart un ClusterRole. La CI vérifie la politique des
+   classes utilisées (base et filestore) avant de déployer ; si son compte ne peut pas
+   lire les classes (objets du cluster), elle le signale sans bloquer. Elle sert aux
+   points de restauration de la base et du filestore. Le snapshot doit être
    copy-on-write : quelques secondes, quelle que soit la taille du volume. Avec Longhorn
    : `type: snap` (snapshot dans le volume), pas `bak` (copie vers la cible de
    sauvegarde, aussi lente que S3) ; exemple
@@ -444,9 +485,10 @@ cités sont des exemples. `ci/deploy.sh` vérifie ces fonctions avant de déploy
       applique les rôles déclarés quel que soit le bootstrap. Le Secret `-app` généré
       par CNPG n'est pas utilisé.
     - **`GRANT EXECUTE ON FUNCTION pg_create_restore_point(text) TO odoo`**
-      (`postInitSQL`, base `postgres`) : la fonction est réservée aux superutilisateurs,
-      et le Job `migrate` l'appelle (§6.2). La restauration la conserve (données
-      restaurées).
+      (`postInitSQL`, exécuté dans la base `postgres`) : la fonction est réservée aux
+      superutilisateurs. Le droit vaut pour la base `postgres` seulement (vérifié :
+      refus dans `app`), c'est donc là que `stop-snapshot` l'appelle (§6.2). La
+      restauration le conserve (données restaurées).
     - **Service stable `odoo-db`** devant le primaire du cluster actif (sélecteur
       `cnpg.io/cluster` et `cnpg.io/instanceRole: primary`,
       `deploy/examples/database-service.yaml`), appliqué une fois par l'administrateur,
@@ -455,12 +497,22 @@ cités sont des exemples. `ci/deploy.sh` vérifie ces fonctions avant de déploy
       ne portent pas ce nom : la connexion reste en `sslmode=prefer`, ou
       `cluster.certificates.serverAltDNSNames` si l'on veut vérifier l'hôte.
     - **Après chaque installation de la base, restauration comprise**, l'administrateur
-      ajoute la section `spec.backup.volumeSnapshot` (`online: false`) par un
-      `kubectl patch` documenté dans l'exemple. Le chart `cnpg/cluster` 0.9.0 ne sait
-      pas l'écrire
+      ajoute la section `spec.backup.volumeSnapshot` par un `kubectl patch` documenté
+      dans l'exemple :
+      `{"className":"<classe>","online":false,"snapshotOwnerReference":"backup"}`.
+      `snapshotOwnerReference: backup` rattache les snapshots de la base à leur `Backup`
+      : supprimer la `Backup` les supprime (vérifié sur kind). Le chart `cnpg/cluster`
+      0.9.0 ne sait pas écrire cette section
       ([cloudnative-pg/charts#900](https://github.com/cloudnative-pg/charts/issues/900))
       ; `helm upgrade` la conserve (vérifié avec Helm 4). Quand le chart la gérera, le
-      patch deviendra une valeur.
+      patch deviendra une valeur. La CI vérifie les trois réglages avant de déployer, et
+      le job `restore` recopie la section sur le cluster restauré.
+    - **Rétention native de CNPG** : elle ne couvre pas les snapshots de volume
+      (documentation de CNPG 1.30 : « Volume snapshots … do not support retention
+      policies »), et `spec.backup.retentionPolicy` est dépréciée au profit de la
+      rétention du plugin Barman, qui ne purge que S3. Les points de restauration sont
+      donc purgés par le chart Odoo (§6.4) ; la rétention de l'`ObjectStore` reste celle
+      de la reprise après sinistre.
 11. Un **bucket S3 hors du cluster** et ses identifiants, un dossier par environnement.
 12. Le chart Odoo prend l'hôte et le port de la base dans ses valeurs
     (`database.external.host`, `database.external.port`), et les identifiants dans un
@@ -592,22 +644,21 @@ Un seul chart `odoo` pour les trois environnements, conforme à `kubernetes-patt
 - aucun produit d'infrastructure supposé : StorageClasses, `VolumeSnapshotClass`,
   Gateway et `ObjectStore` sont des noms dans les valeurs.
 
-| Template                  | Rôle                                                                                                                                                                   |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deployment.yaml`         | Odoo, init container `wait-db` (§3.2), sidecar Mailpit (en option) ; `replicas` depuis `odoo.replicas`                                                                 |
-| `job-migrate.yaml`        | Job `migrate` (§6.2) : hook `pre-upgrade` (mise à jour de recette et prod) ou `post-install` / `post-upgrade` (première installation, review)                          |
-| `job-stop-snapshot.yaml`  | Recette et prod : hook `pre-upgrade` (poids -5), arrêt d'Odoo et point de restauration `pending` (§6.2)                                                                |
-| `job-validate.yaml`       | Recette et prod : hook `post-upgrade`, `pending` → `validated`                                                                                                         |
-| `hooks-rbac.yaml`         | ServiceAccount, Role et RoleBinding des hooks, hooks `pre-install,pre-upgrade` de poids -10 (§6.4)                                                                     |
-| `configmap-config.yaml`   | `odoo.conf` complet généré depuis `odoo.config`, sans secret (§6.1) ; copie `<release>-odoo-conf-hook` en hook pour les Jobs, rendue par le même helper                |
-| `service.yaml`            | 8069 ; 8072 (`appProtocol: kubernetes.io/ws`) si `workers` > 0 ; 8025 (Mailpit)                                                                                        |
-| `httproute.yaml`          | Hôte Odoo (`/websocket` vers 8072 en multi-process), hôte Mailpit, filtres optionnels ; rattaché à la Gateway de l'administrateur                                      |
-| `pvc.yaml`                | Si `odoo.persistence.enabled` et sans `existingClaim` : `/var/lib/odoo`, recette et prod `<release>-odoo-data` (`keep`), review `<release>-odoo-data-<digest court>`   |
-| `postgres.yaml`           | Base `ephemeral` (review) : PostgreSQL 18 (Deployment, Service `<release>-postgres`, volume `pgdata-<digest court>` sur `/var/lib/postgresql`, `POSTGRES_DB=postgres`) |
-| `secrets.yaml`            | Review : mots de passe générés une fois, conservés via `lookup`                                                                                                        |
-| `networkpolicy.yaml`      | Odoo joignable depuis la Gateway seulement ; base éphémère depuis les pods de la release seulement. Sortie libre ; une base externe a sa propre policy                 |
-| `serviceaccount.yaml`     | Compte d'Odoo, sans jeton                                                                                                                                              |
-| `snapshot-retention.yaml` | Recette et prod : CronJob de rétention, avec son ServiceAccount, son Role et son RoleBinding permanents (§6.4)                                                         |
+| Template                 | Rôle                                                                                                                                                                   |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deployment.yaml`        | Odoo, init container `wait-db` (§3.2), sidecar Mailpit (en option) ; `replicas` depuis `odoo.replicas`                                                                 |
+| `job-migrate.yaml`       | Job `migrate` (§6.2) : hook `pre-upgrade` (mise à jour de recette et prod) ou `post-install` / `post-upgrade` (première installation, review)                          |
+| `job-stop-snapshot.yaml` | Recette et prod : hook `pre-upgrade` (poids -5), arrêt d'Odoo et point de restauration `pending` (§6.2)                                                                |
+| `job-validate.yaml`      | Recette et prod : hook `post-upgrade`, `pending` → `validated`                                                                                                         |
+| `hooks-rbac.yaml`        | ServiceAccount, Role et RoleBinding des hooks, hooks `pre-install,pre-upgrade` de poids -10 (§6.4)                                                                     |
+| `configmap-config.yaml`  | `odoo.conf` complet généré depuis `odoo.config`, sans secret (§6.1) ; copie `<release>-odoo-conf-hook` en hook pour les Jobs, rendue par le même helper                |
+| `service.yaml`           | 8069 ; 8072 (`appProtocol: kubernetes.io/ws`) si `workers` > 0 ; 8025 (Mailpit)                                                                                        |
+| `httproute.yaml`         | Hôte Odoo (`/websocket` vers 8072 en multi-process), hôte Mailpit, filtres optionnels ; rattaché à la Gateway de l'administrateur                                      |
+| `pvc.yaml`               | Si `odoo.persistence.enabled` et sans `existingClaim` : `/var/lib/odoo`, recette et prod `<release>-odoo-data` (`keep`), review `<release>-odoo-data-<digest court>`   |
+| `postgres.yaml`          | Base `ephemeral` (review) : PostgreSQL 18 (Deployment, Service `<release>-postgres`, volume `pgdata-<digest court>` sur `/var/lib/postgresql`, `POSTGRES_DB=postgres`) |
+| `secrets.yaml`           | Review : mots de passe générés une fois, conservés via `lookup`                                                                                                        |
+| `networkpolicy.yaml`     | Odoo joignable depuis la Gateway seulement ; base éphémère depuis les pods de la release seulement. Sortie libre ; une base externe a sa propre policy                 |
+| `serviceaccount.yaml`    | Compte d'Odoo, sans jeton                                                                                                                                              |
 
 **`values.yaml`** (avec `values.schema.json`) :
 
@@ -625,8 +676,8 @@ Un seul chart `odoo` pour les trois environnements, conforme à `kubernetes-patt
 - `odoo.persistence` : `enabled` (`true` par défaut), `accessMode`, `size`,
   `storageClass`, `existingClaim` (restauration manuelle du filestore) (§3.4) ;
 - `jobs` : délais des Jobs (`activeDeadlineSeconds`), délai du snapshot ;
-- `restorePoints` : préfixe des étiquettes, rétention (`enabled`, `keep` (3),
-  `schedule`, image avec `sh` et `kubectl` pour les hooks et le CronJob) (§6.4) ;
+- `restorePoints` : préfixe des étiquettes, `keep` (3, au moins 1), image avec `sh` et
+  `kubectl` des Jobs `stop-snapshot` et `validate`, délai du snapshot (§6.4) ;
 - noms des StorageClasses, de la `VolumeSnapshotClass`, du secret de registre ; Gateway
   (`parentRefs`) et hôtes ; Mailpit ; ressources.
 
@@ -738,16 +789,21 @@ dans l'environnement.
 
 ### 6.2 Jobs du chart
 
-| Job                             | Conteneurs (dans l'ordre)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `stop-snapshot` (recette, prod) | 1. `stop` (image kubectl) : Deployments d'Odoo de la release à 0, attente de la fin des pods ; cluster actif lu dans le Service stable ; `Backup` `pending` terminée existante → rien à prendre. 2. `restore-point` (image Odoo, `psql`) : `pg_create_restore_point('<cluster>-preupgrade-r<révision>')` s'il y a un point à prendre. 3. `snapshot` (image kubectl) : `Backup` `method: volumeSnapshot`, `online: false`, étiquetée `pending`, et `VolumeSnapshot` `<nom>-filestore` s'il y a un PVC ; attente (délai réglable, 15 min par défaut) |
-| `migrate` (partout)             | 1. `db-init` : seulement si la base n'existe pas ; `odoo db init --password $(ODOO_INIT_ADMIN_PASSWORD)` (recette, prod) ou `--with-demo --password $(ODOO_REVIEW_ADMIN_PASSWORD)` (review). 2. `install` : `odoo -i <odoo.modules> --stop-after-init --no-http`. 3. `update` : `click-odoo-update`                                                                                                                                                                                                                                                |
-| `validate` (recette, prod)      | `kubectl label` : la `Backup` `pending` de la release passe `validated`                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Job                             | Conteneurs (dans l'ordre)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `stop-snapshot` (recette, prod) | 1. `stop` (image kubectl) : refus si un point `pending` complet est orphelin (§3.3) ; Deployments d'Odoo de la release à 0, attente de la fin des pods ; cluster actif lu dans le Service stable ; point `pending` complet existant → rien à prendre. 2. `restore-point` (image Odoo, `psql`, base `postgres`) : `pg_create_restore_point('<cluster>-preupgrade-r<révision>')` s'il y a un point à prendre. 3. `snapshot` (image kubectl) : `Backup` `method: volumeSnapshot`, `online: false`, étiquetée `pending`, annotée (image visée, nom du snapshot du filestore) ; lecture de son `metadata.uid` ; `VolumeSnapshot` `<nom>-filestore` avec une `ownerReference` vers la `Backup` (cet UID, sans `blockOwnerDeletion`) s'il y a un PVC ; attente de la `Backup` (`completed`, échec immédiat sur `failed`) et du snapshot (`readyToUse: true`), délai réglable (15 min par défaut) ; attente du pod primaire prêt |
+| `migrate` (partout)             | 1. `db-init` : attente de la base (`pg_isready`), puis seulement si la base n'existe pas `odoo db init --password $(ODOO_INIT_ADMIN_PASSWORD)` (recette, prod) ou `--with-demo --password $(ODOO_REVIEW_ADMIN_PASSWORD)` (review). 2. `install` : `odoo -i <odoo.modules> --stop-after-init --no-http`. 3. `update` : `click-odoo-update`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `validate` (recette, prod)      | (image kubectl) 1. le point `pending` complet passe `validated` ; un échec ici fait échouer le hook. 2. suppression des points `pending` incomplets. 3. purge : au-delà des `keep` plus récents parmi les `validated` et `restored`, `kubectl delete backup` (les snapshots suivent). Les étapes 2 et 3 n'échouent jamais : une erreur est signalée dans les logs et le hook réussit                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 - **Le point nommé avant le snapshot** : sur une instance unique, CNPG isole le primaire
   pendant le snapshot à froid, et `psql` ne pourrait plus s'y connecter. Odoo est déjà
   arrêté : la position dans les WAL vaut celle du snapshot. Le rôle `odoo` a le droit
-  d'appeler la fonction (`GRANT`, §4). Le nom est celui de la `Backup`.
+  d'appeler la fonction dans la base `postgres` (`GRANT`, §4). Le nom est celui de la
+  `Backup`.
+- **Après le snapshot à froid**, CNPG déclare le `Cluster` prêt avant que le primaire
+  accepte de nouveau des connexions par le Service : sans attente du pod primaire et
+  sans `pg_isready`, le premier Job `migrate` de l'essai a échoué sur un refus de
+  connexion.
 - **Le Job `migrate`** n'a que des commandes natives d'Odoo ou de `click-odoo-contrib`,
   passées par l'entrypoint de l'image. Les Jobs `stop-snapshot` et `validate` ont des
   commandes `kubectl` courtes, écrites dans les templates et relues par le lint.
@@ -778,9 +834,9 @@ touche jamais la base.
 ### 6.3 Remise à zéro des reviews et garde-fous
 
 Le chart ne contient **aucune commande de suppression de données** (`dropdb`, `DROP`,
-`rm`, `--force`), pour aucun environnement. Le CronJob de rétention ne supprime que des
-`Backup` et des `VolumeSnapshot` de points de restauration, et son Role ne lui donne
-rien d'autre (§6.4). La remise à zéro d'une review vient de ses volumes :
+`rm`, `--force`), pour aucun environnement. Le hook `validate` ne supprime que des
+`Backup` de points de restauration (leurs snapshots suivent), et son Role ne lui donne
+rien d'autre à supprimer (§6.4). La remise à zéro d'une review vient de ses volumes :
 
 - avec une base `ephemeral`, le volume PostgreSQL (`pgdata-<digest court>`) et celui du
   filestore (`odoo-data-<digest court>`) ont le digest dans leur nom. Une nouvelle image
@@ -808,56 +864,79 @@ Garde-fous :
     digest, et échouent avec `database.type=ephemeral` ;
   - l'étape `db-init` de recette et de prod n'a pas la démo et lit le mot de passe admin
     dans le Secret applicatif ;
-  - aucun Job `stop-snapshot` ni `validate`, ni CronJob, n'est rendu en review ;
-  - les Roles des hooks et du CronJob n'ont que les ressources et verbes du §6.4.
+  - aucun Job `stop-snapshot` ni `validate`, ni compte des hooks, n'est rendu en review
+    ;
+  - le Role des hooks n'a que les ressources et verbes du §6.4 ;
+  - le snapshot du filestore porte une `ownerReference` sans `blockOwnerDeletion`.
 
 L'image ne change pas pour Kubernetes, en dehors des phases 0 et 0 bis.
 
-### 6.4 Comptes du chart et rétention des points de restauration
+### 6.4 Compte des hooks et rétention des points de restauration
 
-Deux ServiceAccounts, aux droits et au cycle de vie différents :
+**Un seul compte, `<release>-hooks`**, en hook `pre-install,pre-upgrade` de poids -10
+avec `before-hook-creation` : recréé à chaque mise à jour, non suivi par la release, il
+n'existe que pour les hooks. Le compte d'Odoo reste sans jeton. Son Role, limité au
+namespace :
 
-| Compte                | Cycle de vie                                                                                                              | Droits (namespace)                                                                                                                                                                                                                                                            |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<release>-hooks`     | Hook `pre-install,pre-upgrade`, poids -10, `before-hook-creation` : recréé à chaque mise à jour, non suivi par la release | `get` sur les Deployments et `patch` sur `deployments/scale` ; `list`, `watch` sur les pods ; `get` sur les Services et les `clusters.postgresql.cnpg.io` ; `create`, `get`, `list`, `patch` sur les `backups.postgresql.cnpg.io` ; `create`, `get` sur les `volumesnapshots` |
-| `<release>-retention` | Ressource permanente de la release, comme le CronJob                                                                      | `get`, `list`, `delete` sur les `backups.postgresql.cnpg.io` et les `volumesnapshots`                                                                                                                                                                                         |
+| Ressource                                 | Verbes                                              | Pour                                                                                    |
+| ----------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `apps/deployments`                        | `get`, `list`                                       | Trouver les Deployments d'Odoo de la release, lire leur image (point orphelin)          |
+| `apps/deployments/scale`                  | `get`, `patch`                                      | Les passer à 0                                                                          |
+| `pods`                                    | `get`, `list`, `watch`                              | Attendre la fin des pods d'Odoo, puis le pod primaire prêt                              |
+| `services`                                | `get`                                               | Lire le cluster actif dans le sélecteur du Service stable                               |
+| `postgresql.cnpg.io/clusters`             | `get`, `list`, `watch`                              | Attendre que le cluster soit prêt                                                       |
+| `postgresql.cnpg.io/backups`              | `create`, `get`, `list`, `watch`, `patch`, `delete` | Créer le point, lire son UID et sa phase, l'étiqueter, purger                           |
+| `snapshot.storage.k8s.io/volumesnapshots` | `create`, `get`, `list`, `watch`                    | Créer le snapshot du filestore, attendre `readyToUse`, vérifier qu'un point est complet |
 
-Partager un compte donnerait au CronJob, qui tourne chaque nuit sans surveillance, le
-pouvoir d'arrêter la production. Le compte d'Odoo reste sans jeton.
+Pas de `delete` sur les `volumesnapshots` : ils partent avec leur `Backup`, par CNPG
+(`snapshotOwnerReference: backup`) pour la base et par le ramasse-miettes de Kubernetes
+(`ownerReference`) pour le filestore. Pas de `blockOwnerDeletion` sur cette référence :
+certains clusters exigeraient alors `update` sur `backups/finalizers`. Aucun accès aux
+Secrets : les identifiants de la base arrivent dans les conteneurs par `secretKeyRef`.
 
-Les snapshots copy-on-write consomment l'espace modifié depuis leur prise, et leur
-accumulation dégrade le stockage. Le chart porte donc leur purge : ni la CI ni
-l'administrateur ne suppriment de point à la main.
+**Rétention**, dans le hook `validate`, après chaque mise à jour réussie : de nouveaux
+points n'apparaissent qu'aux mises à jour. Les snapshots copy-on-write consomment
+l'espace modifié depuis leur prise, et leur accumulation dégrade le stockage : le chart
+porte donc leur purge, ni la CI ni l'administrateur.
 
-- **CronJob `<release>-snapshot-retention`**, recette et prod seulement,
-  `concurrencyPolicy: Forbid`, horaire `restorePoints.retention.schedule` (chaque nuit
-  par défaut).
-- **Règle.**
-  - Une `Backup` `pending` n'est jamais supprimée : pendant un incident, c'est le seul
-    point de restauration valable.
-  - Les `restorePoints.retention.keep` plus récents (3 par défaut) se comptent parmi les
-    `validated` et `restored` de la release, triés par date.
-  - Pour chacun des plus anciens, le CronJob supprime la `Backup`, les `VolumeSnapshot`
-    que CNPG a créés pour elle (sélection par étiquette, à confirmer à l'essai) et
-    `<nom>-filestore`.
-  - Il ne dépend pas de `snapshotOwnerReference` : le patch du `Cluster` reste le même.
+- Un point `pending` complet n'est jamais supprimé : pendant un incident, c'est le seul
+  point de restauration valable.
+- Les points `pending` incomplets sont supprimés : ils ne servent à rien et ne doivent
+  pas compter parmi les `keep`.
+- Les `restorePoints.keep` plus récents (3 par défaut) se comptent parmi les `validated`
+  et `restored` de la release, triés par date ; les plus anciens sont supprimés par
+  `kubectl delete backup`, une suppression par point.
+- Une erreur de purge est signalée dans les logs et ne fait pas échouer le hook : la
+  mise à jour a réussi, la purge reprendra à la suivante.
+- Nombre de points borné : au plus `keep` + 1 (le point `pending` pendant une mise à
+  jour). Après une restauration, le point `restored` est compté avec les autres et purgé
+  à la prochaine mise à jour réussie.
 - **Espace libéré** seulement avec une `VolumeSnapshotClass` en `deletionPolicy: Delete`
   (§4).
-- **Image** : `sh` et `kubectl`, épinglés par digest (`restorePoints.image`), la même
-  que pour les Jobs `stop-snapshot` et `validate`. Le choix se fait à l'essai.
+- **Image** des Jobs `stop-snapshot` et `validate` (décision du 2026-10-18) :
+  `cgr.dev/chainguard/kubectl:latest-dev`, épinglée par digest (`restorePoints.image`).
+  La variante `-dev` est nécessaire : l'image `latest` de Chainguard est distroless,
+  sans shell, comme `registry.k8s.io/kubectl`. Elle fournit `sh`, `kubectl`, `awk`,
+  `grep` et `head`, pas `jq` ; 43 Mo, non-root (uid 65532), utilisée aux essais. Rien
+  n'est installé au lancement. En gratuit, Chainguard ne publie que les étiquettes
+  `latest` et `latest-dev` : le digest est relevé à chaque montée de version du chart,
+  et la valeur permet de pointer vers une copie dans le registre du projet si un digest
+  venait à disparaître.
+- Un administrateur qui supprime un point n'a qu'une `Backup` à supprimer ; il ne doit
+  jamais supprimer un point `pending` complet.
 
 ## 7. Scripts `ci/`
 
 La CI ne fait que lancer les commandes ; le cycle de mise à jour est dans le chart.
 
-| Script                             | Rôle                                                                                                                                                                                                                                                                     |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ci/deploy.sh ENV IMAGE@DIGEST`    | Vérifications du §3.2, même digest déjà déployé → rien, release « pending », `helm upgrade --install --wait`, smoke HTTPS. Résumé du job avec les logs des Jobs de hook en échec et, en review, les identifiants. Plafond des reviews. Fonctions dans `ci/deploy-lib.sh` |
-| `ci/deploy-restore.sh ENV [POINT]` | Job `restore` (§3.3) : `Backup` `pending` (ou `POINT` pour un retour arrière manuel), nouveau cluster CNPG, patch, bascule du Service, `restored`, `helm rollback`, smoke ; sans point : `helm rollback` seul                                                            |
-| `ci/review-remove.sh N`            | `helm uninstall pr-<n>`, puis suppression des ressources de hook de la release (non suivies par Helm), par étiquette                                                                                                                                                     |
-| `ci/review-sweep.sh`               | Review apps des PR fermées (API GitHub) ; `DRY_RUN` et liste de PR factice pour les tests                                                                                                                                                                                |
-| `ci/chart-lint.sh`                 | `helm lint`, rendu des trois environnements, kubeconform (avec les schémas des CRD), `odoo.conf` rendu comparé à un fichier attendu, `odoo.modules` conforme à `addons/`, garde-fous du §6.3                                                                             |
-| `ci/chart-e2e.sh`                  | kind avec CNPG, plugin Barman, csi-driver-host-path, les CRD Gateway API et MinIO, installés pour le test ; base de recette installée avec le chart `cnpg/cluster` et `deploy/examples` ; scénarios des phases 2, 3 et 3 bis, en local                                   |
+| Script                             | Rôle                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ci/deploy.sh ENV IMAGE@DIGEST`    | Vérifications du §3.2 (dont la politique `Delete` des classes de snapshots et le point `pending` orphelin), même digest déjà déployé → rien, release « pending », `helm upgrade --install` (avec `--wait` pour une mise à jour de recette ou de prod, sinon `kubectl rollout status` ensuite), smoke HTTPS. Résumé du job avec les logs des Jobs de hook en échec et, en review, les identifiants. Plafond des reviews. Fonctions dans `ci/deploy-lib.sh` |
+| `ci/deploy-restore.sh ENV [POINT]` | Job `restore` (§3.3) : point `pending` complet (ou `POINT` pour un retour arrière manuel), nouveau cluster CNPG, section `volumeSnapshot` recopiée, bascule du Service, `restored`, `helm rollback`, smoke ; sans point : `helm rollback` seul ; mise à jour appliquée et pods prêts : pas de restauration, alerte                                                                                                                                        |
+| `ci/review-remove.sh N`            | `helm uninstall pr-<n>`, puis suppression des ressources de hook de la release (non suivies par Helm), par étiquette                                                                                                                                                                                                                                                                                                                                      |
+| `ci/review-sweep.sh`               | Review apps des PR fermées (API GitHub) ; `DRY_RUN` et liste de PR factice pour les tests                                                                                                                                                                                                                                                                                                                                                                 |
+| `ci/chart-lint.sh`                 | `helm lint`, rendu des trois environnements, kubeconform (avec les schémas des CRD), `odoo.conf` rendu comparé à un fichier attendu, `odoo.modules` conforme à `addons/`, garde-fous du §6.3                                                                                                                                                                                                                                                              |
+| `ci/chart-e2e.sh`                  | kind avec CNPG, plugin Barman, csi-driver-host-path, les CRD Gateway API et MinIO, installés pour le test ; base de recette installée avec le chart `cnpg/cluster` et `deploy/examples` ; scénarios des phases 2, 3 et 3 bis, en local                                                                                                                                                                                                                    |
 
 `ci/deploy-snapshot.sh` et `ci/deploy-rollback.sh` (phase 3) disparaissent : remplacés
 par les hooks du chart et `ci/deploy-restore.sh`.
@@ -901,7 +980,7 @@ que des exemples liés au projet, à appliquer ou adapter par l'administrateur :
 - `cnpg-cluster.values.yaml` : base de recette ou de prod avec le chart `cnpg/cluster`
   (PG 18, plugin Barman Cloud, sauvegarde nocturne, un dossier S3 par environnement ;
   rôle `odoo` déclaré avec `odoo-db-credentials`, `GRANT` sur `pg_create_restore_point`)
-  ;
+  ; en tête, le patch `volumeSnapshot` avec `snapshotOwnerReference: backup` ;
 - `cnpg-cluster-recovery.values.yaml` : base restaurée depuis le snapshot d'un point de
   restauration, une instance, mêmes rôles (runbook §3.3) ;
 - `database-credentials.example.sh` : Secret `odoo-db-credentials`
@@ -1078,8 +1157,8 @@ sweep sur une liste factice). `ci/chart-lint.sh` : 28 contrôles sur 28. Décisi
   le déploiement qui suit une restauration revenait au premier filestore et à la base en
   échec.
 - **Rétention** (décision de Harold) : la CI ne supprime aucun point de restauration ;
-  le résumé les liste, l'administrateur purge. Remplacée en phase 3 bis par le CronJob
-  du chart (§6.4).
+  le résumé les liste, l'administrateur purge. Remplacée en phase 3 bis par la purge du
+  hook `validate` (§6.4).
 - **Contrôle `volumeSnapshot` dès le premier déploiement** : le patch est exigé dès
   l'installation de la base, l'oubli se voit tout de suite.
 - **Même image déjà en service** : seulement remise à 1 (le Job `migrate` disparaît à
@@ -1094,56 +1173,56 @@ sweep sur une liste factice). `ci/chart-lint.sh` : 28 contrôles sur 28. Décisi
   Helm en plus.
 
 **Phase 3 bis, le chart porte le cycle de mise à jour (décisions du 2026-10-18).** Un
-seul lot. Rien n'est codé avant les essais.
+seul lot.
 
-Essais sur kind :
+**Phase 3 bis, résultats des essais (2026-10-18).** Sur kind (contexte `kind-odoo-e2e`,
+namespace `trial`, PSA `restricted`), avec un chart prototype : Deployments factices,
+vraies `Backup` CNPG 1.30.1 (chart `cnpg/cluster` 0.9.0, plugin Barman), « migration »
+en `psql` qui écrit puis échoue à la demande, et l'image Odoo de l'e2e pour le
+filestore.
 
-1. **Séquence des hooks** : `kubectl scale` à 0 en `pre-upgrade`, puis Helm 4 applique
-   les Deployments avec le nombre de réplicas des valeurs (propriété du champ `replicas`
-   en apply côté serveur) ; un hook en échec laisse les Deployments à 0 ;
-   `helm rollback` les remet sur l'ancienne image.
-2. **États** : une relance après échec ne prend pas de nouveau point ; une `Backup` en
-   échec ne bloque rien ; `validate` valide la `pending` d'une révision antérieure.
-3. **Première installation et review** (solution A) : marqueur de `wait-db`, affinité du
-   Job avec le pod Odoo sur un volume RWO ; relance d'une première installation en échec
-   avec Helm 4.
-4. **Rôles déclarés** : `cluster.roles` avec `passwordSecret: odoo-db-credentials` sur
-   le propriétaire de `app`, à l'installation puis sur un cluster restauré par le chart
-   ; le Secret `-app` est ignoré.
-5. **Point nommé** : `GRANT` sur `pg_create_restore_point`, appel par le rôle `odoo`
-   depuis le Job ; restauration Barman avec `recoveryTarget.targetName` (le chart ne
-   rend que `pitrTarget.time` : à vérifier).
-6. **Rétention** : étiquettes que CNPG pose sur les `VolumeSnapshot` d'une `Backup` ;
-   espace rendu avec `deletionPolicy: Delete`.
-7. **Filestore** : une migration n'efface aucun fichier ; une base restaurée retrouve
-   ses pièces jointes sans restaurer le filestore.
-8. **Image** des hooks et du CronJob : `registry.k8s.io/kubectl` a-t-elle un shell ?
-   Sinon, une autre image épinglée, soumise avant d'être retenue.
-9. **Job `restore`** de bout en bout, avec le Role de la CI (créer un `Cluster`,
-   modifier le Service, étiqueter une `Backup`).
+| Essai                            | Résultat                                                                                                                                                                                                                                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1. Séquence des hooks            | OK : mise à jour complète en 45 s ; après `kubectl scale` à 0, Helm 4 réapplique le nombre de réplicas, et le champ `replicas` appartient de nouveau à `helm` (pas de dérive)                                                                                                              |
+| 2. États                         | OK : la relance après échec garde le point `pending` (« Pas de nouveau snapshot ») ; la relance réussie le valide                                                                                                                                                                          |
+| 3. Première installation, review | `--wait` bloque `post-install` (correction du §3.2) ; sans `--wait`, review en 3 s et nouvelle image en 4 s ; relance d'une première installation en échec = mise à jour ; RWO sur plusieurs nœuds non testable (kind à un nœud)                                                           |
+| 4. Rôles déclarés                | OK : rôle `odoo` réconcilié, `CREATEDB`, non superutilisateur ; même mot de passe sur le cluster restauré, par le Service stable                                                                                                                                                           |
+| 5. Point nommé                   | OK dans la base `postgres` (refus dans `app`) ; restauration Barman avec `targetName` : exactement l'état d'avant la mise à jour, avec un `Cluster` brut et le `backupID` d'une sauvegarde de base antérieure (exigé par CNPG, et le chart ne rend pas `targetName`) : runbook de sinistre |
+| 6. Rétention                     | OK : CNPG étiquette ses snapshots `cnpg.io/backupName` ; `snapshotOwnerReference: backup` et l'`ownerReference` du filestore : `kubectl delete backup` supprime les deux snapshots et leurs `VolumeSnapshotContent` (classe en `Delete`)                                                   |
+| 7. Filestore                     | OK : le fichier d'une pièce jointe supprimée survit à `odoo -u base` et à `click-odoo-update` ; marqueur de `wait-db` : `module_auto_update.installed_checksums`                                                                                                                           |
+| 8. Image kubectl                 | `registry.k8s.io/kubectl` et `rancher/kubectl` sans shell ; retenue : `cgr.dev/chainguard/kubectl:latest-dev` (§6.4), qui a servi aux essais                                                                                                                                               |
+| 9. Job `restore`                 | OK en 32 s : base revenue au point, ancienne image, Service basculé, nouveau cluster archivant dans son propre `ObjectStore`, point `restored` ; la mise à jour suivante prend son snapshot sur le nouveau cluster. Lancé avec les droits d'administrateur : Role de la CI à vérifier      |
+
+Corrections reportées dans le plan : `--wait` seulement pour les mises à jour (§3.2) ;
+attente du primaire et `pg_isready` après le snapshot (§6.2) ; `GRANT` et appel dans la
+base `postgres` (§4) ; PITR par nom avec `backupID` (§3.4) ; échec immédiat sur une
+`Backup` en échec ; rétention dans `validate` plutôt qu'un CronJob, `Backup`
+propriétaire de tous les snapshots du point (§6.4) ; point complet et point orphelin
+(§3.3).
 
 Changements :
 
 - **chart** :
-  - hooks `stop-snapshot`, `migrate`, `validate`, ConfigMap et RBAC des hooks ;
+  - hooks `stop-snapshot`, `migrate`, `validate` (avec la rétention), ConfigMap et RBAC
+    des hooks ;
   - init container `wait-db` ; Jobs en `post-*` à la première installation et en review
     ;
   - `database.external.host` et `.port`, Secret aux clés `username` et `password` ;
   - modes du filestore (`enabled`, `accessMode`, `existingClaim`), refus de plusieurs
     instances sur un volume RWO ;
-  - CronJob de rétention et son compte ;
   - fin de `state`, `jobs.migrate.run`, `jobs.dbInit`, de la génération du filestore et
     de `database.external.cnpgCluster` ;
 - **scripts** : `ci/deploy.sh` réduit aux vérifications, à `helm upgrade` et au smoke ;
   `ci/deploy-restore.sh` ; fin de `ci/deploy-snapshot.sh` et `ci/deploy-rollback.sh` ;
-- **exemples** : Service stable, Secret des identifiants, rôles et `GRANT`, classe de
-  snapshots en `Delete`, Role de la CI élargi pour la restauration.
+- **exemples** : Service stable, Secret des identifiants, rôles et `GRANT`, patch avec
+  `snapshotOwnerReference`, classe de snapshots en `Delete`, Role de la CI élargi pour
+  la restauration.
 
 Scénarios :
 
 - `chart-lint` :
-  - hooks, comptes et CronJob rendus en recette et en prod avec leurs seuls verbes,
-    absents en review ;
+  - hooks et compte rendus en recette et en prod avec leurs seuls verbes, absents en
+    review ;
   - Jobs en `post-*` à l'installation et en review, en `pre-upgrade` sinon ;
   - modes du filestore ; refus de plusieurs instances sur un volume RWO ;
   - ConfigMap des hooks identique à celle des Deployments ;
@@ -1154,10 +1233,16 @@ Scénarios :
   - module cassé : `deploy` en échec, Odoo à 0 ; `restore` : nouveau cluster, Service
     basculé, `restored`, ancienne image, données du point ;
   - relance après échec : pas de nouveau point, la relance réussie valide le premier ;
-  - snapshot en échec : `helm rollback` seul, base intacte ;
-  - rétention : une `pending` et quatre `validated` → la `pending` et trois `validated`
-    restent, avec leurs snapshots ;
+  - snapshot de la base en échec, puis snapshot du filestore en échec : point incomplet,
+    `helm rollback` seul, base intacte ; la mise à jour suivante supprime le point
+    incomplet ;
+  - point orphelin (`validate` cassé) : la CI et `stop-snapshot` refusent la mise à jour
+    suivante ; le job `restore` ne restaure pas ;
+  - rétention : quatre mises à jour réussies → trois points restent, snapshots de base
+    et de filestore supprimés avec leur `Backup` ; une erreur de purge laisse le hook
+    réussir ;
   - mode sans PVC : point de restauration réduit à la `Backup`.
+- Restent pour la phase 6 : RWO sur plusieurs nœuds, Role de la CI, durées sur Longhorn.
 
 **Phase 6, scénarios :**
 
@@ -1176,28 +1261,30 @@ Scénarios :
 
 ## 12. Risques
 
-| Risque                                                          | Mitigation                                                                                                                                           |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Remise à zéro déclenchée hors review                            | Aucune suppression dans le chart ; volumes par digest refusés hors review ; `db init` refuse une base existante ; droits par namespace ; lint (§6.3) |
-| Restauration incorrecte                                         | Job `restore` testé en e2e et en phase 6 ; l'ancien cluster n'est jamais supprimé par la CI ; Service stable basculé seulement après `Ready`         |
-| Job `migrate` en échec ou trop long                             | `backoffLimit: 0`, délais réglables, `--timeout` de Helm, logs dans le résumé, restauration automatique                                              |
-| Restauration lente sur un gros volume (selon le stockage)       | Mesurée en phase 6 et documentée                                                                                                                     |
-| Coupure prolongée après un échec de mise à jour en prod         | Job `restore` automatique : cluster restauré depuis un snapshot local, ancienne image ; alerte                                                       |
-| Snapshot ≠ sauvegarde                                           | Base : sauvegarde Barman hors cluster ; filestore : sauvegarde hors cluster recommandée ; test de restauration                                       |
-| Fonction du cluster absente ou différente                       | Vérifiée par `ci/deploy.sh` avant toute coupure ; noms des ressources dans les valeurs                                                               |
-| Copie de la prod en recette sans neutralisation                 | Runbook de rafraîchissement avec `odoo db load -n`                                                                                                   |
-| Review apps exposées (code des PR, démo)                        | Mot de passe aléatoire, NetworkPolicy, filtre d'accès, prod sur un autre cluster                                                                     |
-| API du cluster exposée, jeton longue durée                      | Role limité au namespace, règles d'environnement, ruleset des tags, rotation ; OIDC ou ARC en durcissement                                           |
-| Websockets selon l'implémentation Gateway                       | `appProtocol: kubernetes.io/ws`, testé en phase 6                                                                                                    |
-| Plusieurs instances sur un volume RWO                           | Refusé au rendu ; RWX ou filestore S3 (§3.4)                                                                                                         |
-| Run annulé pendant `helm upgrade` (release « pending »)         | Hook encore actif : refus du run suivant ; sinon traité comme un échec (`restore`) ; aucune annulation des déploiements                              |
-| Relance après échec qui snapshotterait une base à moitié migrée | État `pending` : pas de nouveau point tant que le premier n'est ni validé ni restauré                                                                |
-| Hook `validate` en échec après une mise à jour réussie          | La `Backup` reste `pending` (côté sûr) ; levée à la main, documentée                                                                                 |
-| Purge d'un point encore utile                                   | Jamais de `pending` ; les `keep` plus récents gardés ; compte du CronJob limité à lire et supprimer des points                                       |
-| Snapshots accumulés, stockage saturé ou ralenti                 | CronJob de rétention ; `deletionPolicy: Delete`                                                                                                      |
-| Sessions perdues sans PVC                                       | Documenté (§3.4) ; module de sessions en base ou Redis au choix du projet                                                                            |
-| Secret changé sans redémarrage d'Odoo                           | Runbook de rotation ; Reloader en option                                                                                                             |
-| Secret applicatif absent ou clé manquante                       | Vérifié par `ci/deploy.sh` avant l'arrêt ; sinon le pod reste en `CreateContainerConfigError`                                                        |
+| Risque                                                          | Mitigation                                                                                                                                                            |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Remise à zéro déclenchée hors review                            | Aucune suppression dans le chart ; volumes par digest refusés hors review ; `db init` refuse une base existante ; droits par namespace ; lint (§6.3)                  |
+| Restauration incorrecte                                         | Job `restore` testé en e2e et en phase 6 ; l'ancien cluster n'est jamais supprimé par la CI ; Service stable basculé seulement après `Ready`                          |
+| Job `migrate` en échec ou trop long                             | `backoffLimit: 0`, délais réglables, `--timeout` de Helm, logs dans le résumé, restauration automatique                                                               |
+| Restauration lente sur un gros volume (selon le stockage)       | Mesurée en phase 6 et documentée                                                                                                                                      |
+| Coupure prolongée après un échec de mise à jour en prod         | Job `restore` automatique : cluster restauré depuis un snapshot local, ancienne image ; alerte                                                                        |
+| Snapshot ≠ sauvegarde                                           | Base : sauvegarde Barman hors cluster ; filestore : sauvegarde hors cluster recommandée ; test de restauration                                                        |
+| Fonction du cluster absente ou différente                       | Vérifiée par `ci/deploy.sh` avant toute coupure ; noms des ressources dans les valeurs                                                                                |
+| Copie de la prod en recette sans neutralisation                 | Runbook de rafraîchissement avec `odoo db load -n`                                                                                                                    |
+| Review apps exposées (code des PR, démo)                        | Mot de passe aléatoire, NetworkPolicy, filtre d'accès, prod sur un autre cluster                                                                                      |
+| API du cluster exposée, jeton longue durée                      | Role limité au namespace, règles d'environnement, ruleset des tags, rotation ; OIDC ou ARC en durcissement                                                            |
+| Websockets selon l'implémentation Gateway                       | `appProtocol: kubernetes.io/ws`, testé en phase 6                                                                                                                     |
+| Plusieurs instances sur un volume RWO                           | Refusé au rendu ; RWX ou filestore S3 (§3.4)                                                                                                                          |
+| Run annulé pendant `helm upgrade` (release « pending »)         | Hook encore actif : refus du run suivant ; sinon traité comme un échec (`restore`) ; aucune annulation des déploiements                                               |
+| Relance après échec qui snapshotterait une base à moitié migrée | État `pending` : pas de nouveau point tant que le premier n'est ni validé ni restauré                                                                                 |
+| Hook `validate` en échec après une mise à jour réussie          | La `Backup` reste `pending` (côté sûr) ; levée à la main, documentée                                                                                                  |
+| Purge d'un point encore utile                                   | Jamais un point `pending` complet ; les `keep` plus récents gardés ; points incomplets supprimés seulement                                                            |
+| Snapshots accumulés, stockage saturé ou ralenti                 | Purge à chaque mise à jour réussie ; `deletionPolicy: Delete` vérifiée par la CI                                                                                      |
+| Point `pending` orphelin après un `validate` en échec           | La CI et `stop-snapshot` refusent la mise à jour suivante ; le job `restore` ne restaure pas une mise à jour appliquée et servie ; levée à la main                    |
+| Sessions perdues sans PVC                                       | Documenté (§3.4) ; module de sessions en base ou Redis au choix du projet                                                                                             |
+| Secret changé sans redémarrage d'Odoo                           | Runbook de rotation ; Reloader en option                                                                                                                              |
+| Image des hooks introuvable (digest Chainguard retiré)          | Digest relevé à chaque version du chart ; `restorePoints.image` peut viser une copie dans le registre du projet ; le preflight de la CI vérifie que l'image se résout |
+| Secret applicatif absent ou clé manquante                       | Vérifié par `ci/deploy.sh` avant l'arrêt ; sinon le pod reste en `CreateContainerConfigError`                                                                         |
 
 ## 13. Hors périmètre (v1)
 
