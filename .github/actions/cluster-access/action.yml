@@ -1,0 +1,31 @@
+# Access to the cluster of a GitHub environment (deploy.yml, cleanup.yml): Helm 4 pinned,
+# and the kubeconfig of the environment's KUBECONFIG secret, whose context gives the
+# namespace (see deploy/examples/ci-kubeconfig.sh). kubectl, jq and curl come with the
+# runner image.
+name: Cluster access
+description: Helm 4 and the kubeconfig of the environment
+
+inputs:
+  kubeconfig:
+    description: Content of the environment's KUBECONFIG secret
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      with:
+        version: v4.3.0
+    - name: Kubeconfig
+      shell: bash
+      env:
+        KUBECONFIG_CONTENT: ${{ inputs.kubeconfig }}
+      run: |
+        if [ -z "$KUBECONFIG_CONTENT" ]; then
+            echo "::error::secret KUBECONFIG missing in the GitHub environment of this job"
+            exit 1
+        fi
+        umask 077
+        printf '%s\n' "$KUBECONFIG_CONTENT" >"$RUNNER_TEMP/kubeconfig"
+        echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >>"$GITHUB_ENV"
+        echo "namespace: $(KUBECONFIG="$RUNNER_TEMP/kubeconfig" kubectl config view --minify -o jsonpath='{..namespace}')"

@@ -679,6 +679,12 @@ check "mise à jour suivante : points incomplets supprimés" all_gone $incomplet
 check "mise à jour suivante : aucun point en attente" equals "$(point_count pending)" 0
 check "rétention : trois points au plus" equals "$(point_count validated,restored)" 3
 
+log "Recette: restore job with the release deployed and no pending point (nothing to undo)"
+before="$(revision)"
+check "rien à restaurer : job restore sans effet" restore
+check "rien à restaurer : message" in_log "nothing to restore"
+check "rien à restaurer : révision inchangée" equals "$(revision)" "$before"
+
 log "Recette: orphan restore point (validated by nobody after a successful update)"
 orphan="$(points_in validated | awk '{print $NF}')"
 kubectl -n $ns label backups.postgresql.cnpg.io "$orphan" "$PREFIX/upgrade-state=pending" --overwrite >/dev/null

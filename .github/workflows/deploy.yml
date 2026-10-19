@@ -1,0 +1,81 @@
+# Deployment group (called by ci.yml): one image, by digest, into one environment with the
+# chart (§3.2 and §8 of docs/plans/k8s-deployment.md). The chart's hooks carry the update
+# (stop, restore point, migrate, validate); the jobs only run ci/*.sh:
+#   deploy    ci/deploy.sh: preflight, helm upgrade --install, smoke test
+#   restore   ci/deploy-restore.sh, recette and production, only when deploy failed:
+#             restores the pending restore point into a new CNPG cluster, then helm
+#             rollback (nothing to do when the release is still deployed)
+# The GitHub environment of the same name holds the KUBECONFIG secret (namespaced
+# ServiceAccount, see deploy/examples/ci-access.yaml) and, for reviews, the variable
+# REVIEW_MAX_APPS. No Odoo setting and no application secret goes through the workflow:
+# values in deploy/values/<env>.yaml, secrets in the cluster.
+# Concurrency is set by the calling job (one deployment at a time per environment, per
+# pull request for reviews), so that deploy and restore never interleave with another run.
+name: Deployment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: review | recette | production
+        type: string
+        required: true
+      digest:
+        description: Digest of the image (sha256:...)
+        type: string
+        required: true
+      pr-number:
+        description: Pull request of a review app
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    # helm --timeout is 60m (DEPLOY_TIMEOUT), plus preflight and smoke test
+    timeout-minutes: 75
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cluster-access
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+      - name: ci/deploy.sh
+        id: deploy
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          DIGEST: ${{ inputs.digest }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          REPOSITORY: ${{ github.repository }}
+          REVIEW_MAX_APPS: ${{ vars.REVIEW_MAX_APPS }}
+        run: |
+          # Reviews deploy the pull request image of the builds package
+          image="ghcr.io/${REPOSITORY,,}"
+          [ "$ENVIRONMENT" != review ] || image="$image/builds"
+          ci/deploy.sh "$ENVIRONMENT" "$image@$DIGEST"
+
+  restore:
+    needs: deploy
+    if: failure() && inputs.environment != 'review'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cluster-access
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+      - name: ci/deploy-restore.sh
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: ci/deploy-restore.sh "$ENVIRONMENT"

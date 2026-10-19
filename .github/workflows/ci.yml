@@ -1,12 +1,19 @@
-# CI orchestrator: three groups of jobs (reusable workflows), see docs/ci.md.
-#   Quality    quality.yml   pre-commit
-#   Image      image.yml     base -> build -> tests + smoke -> publish
-#   Promotion  promote.yml   tag vX.Y.Z: last release candidate -> X.Y.Z
+# CI orchestrator: four groups of jobs (reusable workflows), see docs/ci.md.
+#   Quality     quality.yml   pre-commit, chart
+#   Image       image.yml     base -> build -> tests + smoke -> publish
+#   Promotion   promote.yml   tag vX.Y.Z: last release candidate -> X.Y.Z
+#   Deployment  deploy.yml    review (pull request), recette (release/*, hotfix/*),
+#                             production (tag, after the promotion)
 # Jobs are thin wrappers around ci/*.sh, which run the same way locally.
+# Deployments are opt-in: the repository variable DEPLOY_ENVIRONMENTS lists the enabled
+# environments (e.g. "review recette production"), each one a GitHub environment holding
+# the KUBECONFIG secret (docs/plans/k8s-deployment.md §4).
 name: CI
 
 on:
   pull_request:
+    # ready_for_review: a draft pull request gets its review app when it leaves draft
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main, develop, "release/**", "hotfix/**", "*.0"]
     tags: ["v*"]
@@ -38,3 +45,47 @@ jobs:
     permissions:
       contents: read
       packages: write
+
+  review:
+    # Internal pull request, not a draft, not a release or hotfix (deployed to recette)
+    if: >-
+      contains(vars.DEPLOY_ENVIRONMENTS, 'review') && github.event_name ==
+      'pull_request' && github.event.pull_request.head.repo.full_name ==
+      github.repository && !github.event.pull_request.draft &&
+      !startsWith(github.head_ref, 'release/') && !startsWith(github.head_ref,
+      'hotfix/') && needs.image.outputs.digest != ''
+    needs: image
+    concurrency:
+      group: deploy-review-pr-${{ github.event.number }}
+      cancel-in-progress: false
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: review
+      digest: ${{ needs.image.outputs.digest }}
+      pr-number: ${{ github.event.number }}
+
+  recette:
+    # The last release candidate pushed is the one in recette
+    if: >-
+      contains(vars.DEPLOY_ENVIRONMENTS, 'recette') && github.event_name == 'push' &&
+      (startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref,
+      'refs/heads/hotfix/'))
+    needs: image
+    concurrency:
+      group: deploy-recette
+      cancel-in-progress: false
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: recette
+      digest: ${{ needs.image.outputs.digest }}
+
+  production:
+    if: contains(vars.DEPLOY_ENVIRONMENTS, 'production') && github.ref_type == 'tag'
+    needs: promote
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
+      digest: ${{ needs.promote.outputs.digest }}

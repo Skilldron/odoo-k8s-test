@@ -1,6 +1,8 @@
-# Cleanup of the disposable GHCR packages (builds, base). The release package
-# (x.y.z-rc.N, x.y.z) is never pruned. Prerequisite: in the settings of each package,
-# give this repository Actions access with the Admin role (deleting versions).
+# Cleanup of the disposable GHCR packages (builds, base) and of the review apps. The
+# release package (x.y.z-rc.N, x.y.z) is never pruned. Prerequisite: in the settings of
+# each package, give this repository Actions access with the Admin role (deleting
+# versions). Review apps (when DEPLOY_ENVIRONMENTS contains review, see ci.yml): removed
+# when their pull request closes, and a nightly sweep removes those missed.
 name: Cleanup
 
 on:
@@ -57,3 +59,51 @@ jobs:
           # (deleted when the pull request closes)
           ci/ghcr-prune.sh "$name/builds" 'keep:30:^(develop|main|[0-9]+\.0|pr-[0-9]+)$'
           ci/ghcr-prune.sh "$name/base" 'keep:5'
+
+  review:
+    # Closed pull request: its review app (release pr-<n>, volumes included) goes away,
+    # after any deployment of the same pull request still running
+    if:
+      contains(vars.DEPLOY_ENVIRONMENTS, 'review') && github.event_name ==
+      'pull_request' && github.event.pull_request.head.repo.full_name ==
+      github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: review
+    concurrency:
+      group: deploy-review-pr-${{ github.event.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cluster-access
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+      - name: ci/review-remove.sh
+        env:
+          PR_NUMBER: ${{ github.event.number }}
+        run: ci/review-remove.sh "$PR_NUMBER"
+
+  sweep:
+    # Review apps of pull requests no longer open, missed by the review job
+    if:
+      contains(vars.DEPLOY_ENVIRONMENTS, 'review') && github.event_name !=
+      'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: review
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cluster-access
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+      - name: ci/review-sweep.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ci/review-sweep.sh

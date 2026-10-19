@@ -65,8 +65,10 @@ les versions dans le paquet de release. La seule promotion est celle de la derni
 configuration propre à chaque environnement passe par des variables d'environnement au
 démarrage du conteneur.
 
-Le déploiement n'est pas inclus dans cette branche : voir les branches
-`20.0-docker-deployment` / `20.0-k8s-deployment`, ou le faire soi-même.
+Cette branche déploie ensuite l'image sur Kubernetes avec le chart Helm de
+`deploy/chart` : review app par PR, recette à chaque release candidate, prod au tag
+(activé par la variable de dépôt `DEPLOY_ENVIRONMENTS`, voir
+[docs/ci.md](docs/ci.md#déploiement-deployyml)).
 
 - [docs/ci.md](docs/ci.md) : pipeline, tags d'image, variables de configuration, exemple
   de déploiement.

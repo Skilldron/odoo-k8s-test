@@ -113,7 +113,8 @@ gh api repos/{owner}/{repo}/rulesets --method POST --input - <<'EOF'
     {"type": "required_status_checks", "parameters": {
       "strict_required_status_checks_policy": false,
       "required_status_checks": [
-        {"context": "quality / lint"}, {"context": "image / tests"},
+        {"context": "quality / lint"}, {"context": "quality / chart"},
+        {"context": "image / tests"},
         {"context": "image / smoke"}, {"context": "image / publish"}]}}
   ]
 }

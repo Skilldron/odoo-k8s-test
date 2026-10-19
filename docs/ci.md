@@ -1,25 +1,29 @@
 # CI et image de prod
 
 La CI (GitHub Actions, runners hébergés par GitHub) vérifie le code, construit l'**image
-de prod**, la teste et la publie sur GHCR. Elle s'arrête là : le **déploiement est à
-faire soi-même** dans cette branche. Les moyens de déploiement (Docker, Kubernetes)
-vivent dans des branches alternatives du dépôt modèle (`20.0-docker-deployment`,
-`20.0-k8s-deployment`).
+de prod**, la teste et la publie sur GHCR. Dans cette branche (`20.0-k8s-deployment`),
+elle la **déploie** ensuite sur Kubernetes avec le chart Helm de `deploy/chart` : review
+app par PR, recette à chaque release candidate, prod au tag (groupe Déploiement
+ci-dessous).
 
 Plans : [plans/ci-github-actions.md](plans/ci-github-actions.md) (v1),
-[plans/ci-v2-image-base.md](plans/ci-v2-image-base.md) (v2, en place). Modèle de
-branches : [gitflow.md](gitflow.md).
+[plans/ci-v2-image-base.md](plans/ci-v2-image-base.md) (v2, en place),
+[plans/k8s-deployment.md](plans/k8s-deployment.md) (déploiement). Modèle de branches :
+[gitflow.md](gitflow.md).
 
 ## Pipeline
 
-Trois groupes de jobs (workflows réutilisables appelés par `.github/workflows/ci.yml`) :
+Quatre groupes de jobs (workflows réutilisables appelés par `.github/workflows/ci.yml`)
+:
 
 ```
-Qualité    quality.yml   lint (pre-commit)
-Image      image.yml     plan ─► base ─► build ─┬─► tests ─┐
-                                                └─► smoke ─┴─► publish
-                         (PR de fork : un seul job « local », sans publication)
-Promotion  promote.yml   tag vX.Y.Z : dernière X.Y.Z-rc.N ─► X.Y.Z
+Qualité      quality.yml   lint (pre-commit), chart (ci/chart-lint.sh)
+Image        image.yml     plan ─► base ─► build ─┬─► tests ─┐
+                                                  └─► smoke ─┴─► publish
+                           (PR de fork : un seul job « local », sans publication)
+Promotion    promote.yml   tag vX.Y.Z : dernière X.Y.Z-rc.N ─► X.Y.Z
+Déploiement  deploy.yml    deploy ─► restore (si deploy échoue, recette et prod)
+                           appelé par les jobs review, recette et production
 ```
 
 | Job       | Rôle                                                                                                 |
@@ -31,14 +35,15 @@ Promotion  promote.yml   tag vX.Y.Z : dernière X.Y.Z-rc.N ─► X.Y.Z
 | `smoke`   | Image prod en lecture seule, sans capacités : `/web/health`, `/web/login`, uid non root              |
 | `publish` | Après tests **et** smoke test : pose les tags lisibles (même digest, sans rebuild) ; sortie `digest` |
 | `promote` | Sur un tag git : promotion de la dernière release candidate ; sortie `digest`                        |
+| `chart`   | Contrôles statiques du chart Helm, sans cluster (`ci/chart-lint.sh`, Helm 4 et kubeconform épinglés) |
 
 Autres workflows :
 
-| Workflow                                | Déclencheur                        | Rôle                                      |
-| --------------------------------------- | ---------------------------------- | ----------------------------------------- |
-| `.github/workflows/cleanup.yml`         | fermeture de PR, quotidien, manuel | Nettoyage des paquets `builds` et `base`  |
-| `.github/workflows/odoo-image-bump.yml` | lundi 5 h, manuel                  | PR quand l'image officielle `odoo` change |
-| `.github/dependabot.yml`                | hebdomadaire                       | PR de mise à jour (actions, pip, npm)     |
+| Workflow                                | Déclencheur                        | Rôle                                                  |
+| --------------------------------------- | ---------------------------------- | ----------------------------------------------------- |
+| `.github/workflows/cleanup.yml`         | fermeture de PR, quotidien, manuel | Nettoyage des paquets `builds` et `base`, review apps |
+| `.github/workflows/odoo-image-bump.yml` | lundi 5 h, manuel                  | PR quand l'image officielle `odoo` change             |
+| `.github/dependabot.yml`                | hebdomadaire                       | PR de mise à jour (actions, pip, npm)                 |
 
 ## Image de base : seuls les modules sont reconstruits
 
@@ -66,8 +71,8 @@ un runner auto-hébergé, avec un cache Docker persistant, éviterait ce téléc
 
 | Événement            | Tags publiés                          | Environnement visé |
 | -------------------- | ------------------------------------- | ------------------ |
-| pull request         | `builds:pr-<n>`                       | review (preview)   |
-| push `develop`       | `builds:develop`, `builds:sha-<7>`    | testing            |
+| pull request         | `builds:pr-<n>`                       | review             |
+| push `develop`       | `builds:develop`, `builds:sha-<7>`    | — (pas de testing) |
 | push `main`, `20.0`  | `builds:<branche>`, `builds:sha-<7>`  | —                  |
 | push `release/X.Y.Z` | `X.Y.Z-rc.<n° de run>`                | recette            |
 | push `hotfix/X.Y.Z`  | `X.Y.Z-rc.<n° de run>`                | recette            |
@@ -97,12 +102,47 @@ Sur un tag `vX.Y.Z`, `ci/image-promote.sh` :
 Toutes les copies de tags (`builds` → release, rc → prod) gardent le digest d'origine
 (`imagetools create --prefer-index=false`).
 
+## Déploiement (`deploy.yml`)
+
+Les déploiements sont **activés** par la variable de dépôt `DEPLOY_ENVIRONMENTS`, qui
+liste les environnements voulus (`review recette production`, ou une partie). Sans elle,
+aucun job de déploiement ne tourne : le dépôt modèle et un projet sans cluster restent
+verts.
+
+| Job (contrôle)        | Déclencheur                                                 | Image                       |
+| --------------------- | ----------------------------------------------------------- | --------------------------- |
+| `review / deploy`     | PR interne non draft (et `ready_for_review`), après `image` | `builds@<digest>` de la PR  |
+| `recette / deploy`    | push `release/**` ou `hotfix/**`, après `image`             | `X.Y.Z-rc.N` par son digest |
+| `production / deploy` | tag `v*`, après `promote`                                   | même digest que la rc       |
+| `<env> / restore`     | recette et prod, seulement si `deploy` a échoué             | —                           |
+
+- Chaque job tourne dans l'**environnement GitHub** du même nom, qui porte le seul
+  secret côté GitHub, `KUBECONFIG` : un ServiceAccount limité au namespace, dont le
+  contexte donne le namespace. L'environnement `review` porte aussi la variable
+  `REVIEW_MAX_APPS` (5 par défaut). L'URL de l'environnement est lue dans les valeurs du
+  chart.
+- **Une mise à jour à la fois** par environnement (par PR pour les reviews) : le job
+  appelant porte la concurrence, sans annulation, pour que `deploy` et `restore` ne se
+  croisent jamais avec un autre run. Seul le run le plus récent en attente est gardé :
+  la dernière rc poussée est celle de la recette.
+- `deploy` lance `ci/deploy.sh` : contrôles préalables, `helm upgrade --install`, smoke
+  test. Les hooks du chart arrêtent Odoo, prennent le point de restauration et migrent
+  la base.
+- `restore` lance `ci/deploy-restore.sh` : restaure le point de restauration en attente
+  dans un nouveau cluster CNPG, puis `helm rollback`. Rien à faire si la release est
+  encore déployée (échec dans les contrôles préalables ou le smoke test).
+- Aucune configuration d'Odoo ni aucun secret applicatif ne passe par les workflows :
+  valeurs dans `deploy/values/<env>.yaml`, secrets dans le cluster.
+
 ## Nettoyage (`cleanup.yml`)
 
-- Fermeture d'une PR : la version taguée `builds:pr-<n>` est supprimée.
+- Fermeture d'une PR : la version taguée `builds:pr-<n>` est supprimée, et sa review app
+  (`ci/review-remove.sh`, après un déploiement en cours de la même PR).
 - Chaque nuit : dans `builds`, suppression des versions non taguées et de tout ce qui
   dépasse les 30 plus récentes, sauf `develop`, `main`, `20.0` et les previews `pr-<n>`
   (supprimées à la fermeture de leur PR) ; dans `base`, on garde les 5 dernières.
+- Chaque nuit, les review apps de PR fermées restantes sont supprimées
+  (`ci/review-sweep.sh`).
 - Le paquet de release n'est **jamais** nettoyé automatiquement.
 
 Les images sont publiées sans attestations (`--provenance=false`) : chaque image est un
@@ -132,6 +172,12 @@ en local :
 | `ci/registry-tags.py IMAGE`     | Liste les tags d'un dépôt d'images (API OCI)                                       |
 | `ci/ghcr-prune.sh PAQUET RÈGLE` | Nettoyage d'un paquet GHCR (`tag:<tag>` ou `keep:<n>[:<regex>]`)                   |
 | `ci/odoo-image-latest.sh`       | Nouveau digest de l'image officielle Odoo, s'il y en a un                          |
+| `ci/chart-lint.sh`              | Contrôles statiques du chart Helm                                                  |
+| `ci/chart-e2e.sh`               | Scénarios de déploiement sur kind (local, pas en CI)                               |
+| `ci/deploy.sh ENV IMAGE@DIGEST` | Déploiement d'une image dans un environnement                                      |
+| `ci/deploy-restore.sh ENV`      | Restauration après une mise à jour en échec                                        |
+| `ci/review-remove.sh N`         | Suppression de la review app d'une PR                                              |
+| `ci/review-sweep.sh`            | Suppression des review apps de PR fermées                                          |
 
 ```sh
 # En local, avec un registre jetable :

@@ -6,7 +6,8 @@
 #     instance), its volumeSnapshot section copied from the active cluster, the stable
 #     Service switched to it, the point labelled restored, then helm rollback to the
 #     revision before the point (old image, Odoo restarted);
-#   - no such point: the database was not touched, helm rollback only;
+#   - no such point: the database was not touched, helm rollback only, or nothing at all
+#     when the release is deployed (deploy job failed in its preflight or smoke test);
 #   - the update was applied and Odoo serves it (only the validation failed): nothing is
 #     restored, the point has to be validated by hand.
 # The previous cluster is never deleted (analysis, then the administrator uninstalls it).
@@ -45,6 +46,10 @@ service="$(value .database.external.host | cut -d. -f1)"
     echo "- release \`$release\`, namespace \`$namespace\`, statut \`$(release_status)\`"
 } | ci_summary
 
+# A run cancelled during helm upgrade leaves its hook Jobs running in the cluster: never
+# restore under a migration still in progress
+[ -z "$(hook_jobs Active)" ] || fail "hook Jobs still running ($(hook_jobs Active | tr '\n' ' ')): try again once they end"
+
 if [ -z "$point" ]; then
     complete_pending "$prefix" >"$work/pending"
     [ "$(grep -c . "$work/pending")" -le 1 ] ||
@@ -57,6 +62,13 @@ if [ -z "$point" ]; then
             echo "Vérifier, puis valider le point : \`kubectl -n $namespace label backups.postgresql.cnpg.io $point $prefix/upgrade-state=validated --overwrite\`."
         } | ci_summary
         fail "update applied and served, restore point $point left pending: validate it by hand"
+    fi
+    if [ -z "$point" ] && [ "$(release_status)" = deployed ]; then
+        # The deploy job failed before helm upgrade (preflight) or after it (smoke test):
+        # the deployed release is the one serving, there is nothing to undo
+        echo "**Rien à restaurer** : la release est déployée et aucun point n'est en attente." | ci_summary
+        echo "deploy-restore: $release deployed, no pending restore point: nothing to restore"
+        exit 0
     fi
 else
     kubectl -n "$namespace" get backups.postgresql.cnpg.io "$point" >/dev/null ||

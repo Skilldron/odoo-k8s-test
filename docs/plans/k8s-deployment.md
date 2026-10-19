@@ -577,7 +577,9 @@ cités sont des exemples. `ci/deploy.sh` vérifie ces fonctions avant de déploy
     - secret `KUBECONFIG` dans chacun, seul secret côté GitHub ;
     - règles de branches et de tags (§2) ;
     - variable `REVIEW_MAX_APPS`. Les hôtes, le domaine des reviews, les namespaces et
-      la Gateway sont dans `deploy/values/*.yaml`, versionnés et relus en PR.
+      la Gateway sont dans `deploy/values/*.yaml`, versionnés et relus en PR ;
+    - variable de dépôt `DEPLOY_ENVIRONMENTS` (`review recette production`, ou une
+      partie) : active les jobs de déploiement.
 21. **Ruleset sur les tags `v*`** : création réservée aux mainteneurs, puisqu'un tag
     déclenche une mise en prod.
 22. Les pré-requis CI existants (rôle Admin sur les paquets). La CI v2 est verte sur
@@ -945,20 +947,26 @@ par les hooks du chart et `ci/deploy-restore.sh`.
 ## 8. Workflows
 
 - **`deploy.yml`** (nouveau, `workflow_call`) : deux jobs.
-  - `deploy` : `environment: {name, url}` ; concurrence par environnement (et par PR
-    pour les reviews), sans annulation ; Helm 4 épinglé, kubeconfig lu dans le secret
-    d'environnement, puis `ci/deploy.sh`. Aucune configuration d'Odoo ni aucun secret
-    applicatif ne passe par le workflow ; l'URL de l'environnement GitHub est lue dans
-    les valeurs.
+  - `deploy` : `environment: {name, url}` ; Helm 4 épinglé, kubeconfig lu dans le secret
+    d'environnement (action composite `.github/actions/cluster-access`), puis
+    `ci/deploy.sh`. Aucune configuration d'Odoo ni aucun secret applicatif ne passe par
+    le workflow ; l'URL de l'environnement GitHub est lue dans les valeurs.
   - `restore` : `needs: deploy`, `if: failure()`, recette et prod seulement, même
-    environnement et même concurrence, `ci/deploy-restore.sh`.
-- **`ci.yml`** : trois nouveaux jobs, et le type `ready_for_review` est ajouté.
+    environnement, `ci/deploy-restore.sh` (rien à faire si la release est encore
+    `deployed` : échec dans les contrôles préalables ou le smoke test).
+  - Concurrence par environnement (et par PR pour les reviews), sans annulation, posée
+    sur le job appelant de `ci.yml` : elle couvre `deploy` et `restore` ensemble, qu'un
+    autre run ne peut pas intercaler.
+- **`ci.yml`** : trois nouveaux jobs, et le type `ready_for_review` est ajouté. Ils ne
+  tournent que pour les environnements listés dans la variable de dépôt
+  `DEPLOY_ENVIRONMENTS` (le dépôt modèle et un projet sans cluster restent verts).
   - `review` : après `image`, pour une PR interne non draft, hors `release/*` et
     `hotfix/*`.
   - `recette` : après `image`, sur un push `release/**` ou `hotfix/**`.
   - `production` : après `promote`, sur un tag.
-- **`cleanup.yml`** : job `review` à la fermeture d'une PR (`ci/review-remove.sh`), et
-  `ci/review-sweep.sh` chaque nuit.
+- **`cleanup.yml`** : job `review` à la fermeture d'une PR (`ci/review-remove.sh`, même
+  concurrence que le déploiement de la PR), et job `sweep` chaque nuit
+  (`ci/review-sweep.sh`).
 - **`quality.yml`** : job `chart` (`ci/chart-lint.sh`), ajouté aux contrôles requis dans
   `docs/gitflow.md`.
 - **`.pre-commit-config.yaml`, `.prettierignore`** : les templates Helm sont exclus de
@@ -1283,6 +1291,37 @@ contrôle). `ci/chart-e2e.sh` : 116 scénarios sur 116 sur kind (Kubernetes 1.37
 - **Reste pour la phase 5** : Role de la CI (`deploy/examples/ci-access.yaml`), dont les
   droits du job `restore` (`Cluster`, `ObjectStore`, Service, `Backup`, release Helm de
   la base) ; documentation du chart publiable et runbooks.
+
+**Phase 4, résultats (2026-10-19).** Workflows livrés : `deploy.yml` (jobs `deploy` et
+`restore`), jobs `review`, `recette` et `production` de `ci.yml` (type
+`ready_for_review` ajouté), jobs `review` et `sweep` de `cleanup.yml`, job `chart` de
+`quality.yml` (Helm 4.3.0 par `azure/setup-helm` épinglé, kubeconform 0.8.0 vérifié par
+SHA-256), action composite `.github/actions/cluster-access` (Helm et kubeconfig du
+secret d'environnement). `quality / chart` ajouté aux contrôles requis de
+`docs/gitflow.md` ; `docs/ci.md` et `README.md` décrivent le groupe Déploiement.
+Vérification : actionlint 1.7.12 (avec shellcheck) sans erreur, et il signale bien une
+entrée inconnue du workflow réutilisable et une sortie inexistante de `promote`
+(mutations) ; pre-commit ; e2e 119/119 (trois contrôles « rien à restaurer » ajoutés).
+
+Écarts et compléments :
+
+- **Activation explicite** : variable de dépôt `DEPLOY_ENVIRONMENTS` ; sans elle, aucun
+  job de déploiement ne tourne (le dépôt modèle n'a pas de cluster).
+- **Concurrence sur le job appelant** de `ci.yml`, pour couvrir `deploy` et `restore`
+  ensemble. Sur une PR, le groupe de haut niveau `ci-<ref>` annule toujours un run en
+  cours : une review interrompue est reprise par `ci/deploy.sh` (release `pending-*`).
+- **`ci/deploy-restore.sh`** : rien à faire si la release est `deployed` sans point en
+  attente (le job `deploy` a échoué dans ses contrôles préalables ou son smoke test : un
+  `helm rollback` aurait défait une release saine), contrôle e2e ajouté ; refus tant
+  qu'un Job de hook est actif (un run annulé laisse sa migration tourner dans le
+  cluster).
+- **Run annulé** en recette ou en prod (`failure()` faux) : pas de job `restore` ; le
+  run suivant trouve la release `pending-upgrade`, échoue et restaure. Choix assumé :
+  une restauration automatique sur annulation courrait sous une migration encore active.
+- **Reste pour la phase 5** (documentation) : protection des environnements GitHub (le
+  secret `KUBECONFIG` de `review` est lisible par le code de toute branche interne ;
+  `recette` limité à `release/**` et `hotfix/**`, `production` aux tags `v*`, avec
+  relecteurs requis s'ils ne retardent pas le job `restore`).
 
 **Phase 6, scénarios :**
 
