@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Nightly sweep of the review apps (§3.1 of docs/plans/k8s-deployment.md): removes those of
-# the pull requests that are no longer open (closed or merged), missed by the cleanup job.
+# Nightly sweep of the review apps: removes those of the pull requests that are no longer
+# open (closed or merged), missed by the cleanup job.
 # Only the releases pr-<n> of the namespace are considered.
 # Usage: ci/review-sweep.sh
 # Env: NAMESPACE (default: namespace of the kubeconfig context), GH_TOKEN and

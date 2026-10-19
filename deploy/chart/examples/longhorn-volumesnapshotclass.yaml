@@ -1,16 +1,15 @@
 # VolumeSnapshotClass for the restore points (database and filestore) on Longhorn: the
-# volumeSnapshot patch of the CNPG cluster and restorePoints.volumeSnapshotClass in
-# deploy/values/<env>.yaml. Requires the snapshot CRDs and snapshot-controller
+# volumeSnapshot patch of the CNPG cluster and restorePoints.volumeSnapshotClass. Requires the snapshot CRDs and snapshot-controller
 # (external-snapshotter).
-#   kubectl apply -f deploy/examples/longhorn-volumesnapshotclass.yaml
+#   kubectl apply -f examples/longhorn-volumesnapshotclass.yaml
 #
 # type: snap keeps the snapshot inside the Longhorn volume: fast to take and to restore.
 # type: bak would upload a copy to the Longhorn backup target, as slow as a restore from S3.
 # A snap snapshot disappears with its volume: the restore points of a database live as long
 # as its cluster (off-site copies are the nightly Barman backups).
 #
-# deletionPolicy: Delete, checked by the CI: deleting a restore point (retention of the
-# chart) must free the snapshot in the storage; with Retain it would stay.
+# deletionPolicy: Delete: deleting a restore point (retention of the chart) must free the
+# snapshot in the storage; with Retain it would stay.
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:

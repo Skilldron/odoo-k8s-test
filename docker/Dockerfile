@@ -84,7 +84,7 @@ USER odoo
 WORKDIR /workspace
 
 ########################################################################
-# prod: the deployed image; the release candidate validated in recette is promoted
+# prod: the deployed image; the release candidate validated in staging is promoted
 # unchanged to production. In CI the "base" stage is the published base:<key> image.
 # Environment specific values come at runtime (env variables, see docs/ci.md).
 FROM base AS prod

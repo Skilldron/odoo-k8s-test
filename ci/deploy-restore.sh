@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Restore job of the workflow, run only when the deploy job failed (§3.3 of
-# docs/plans/k8s-deployment.md), recette and production:
+# Restore job of the workflow, run only when the deploy job failed, persistent environments
+# (the manual procedure is in deploy/chart/docs/operations.md):
 #   - complete pending restore point of the release: new CNPG cluster <cluster>-r<revision>
 #     recovered from it (CNPG "cluster" chart, values of the active cluster, one
 #     instance), its volumeSnapshot section copied from the active cluster, the stable
@@ -26,10 +26,7 @@ source ci/deploy-lib.sh
 usage="usage: ci/deploy-restore.sh ENV [POINT]"
 env="${1:?$usage}"
 point="${2:-}"
-case "$env" in
-recette | production) ;;
-*) fail "no restore point in $env" ;;
-esac
+[[ "$env" =~ ^[a-z0-9-]+$ ]] || fail "invalid environment name: $env"
 namespace="${NAMESPACE:-$(namespace_of_context)}"
 [ -n "$namespace" ] || fail "no namespace: set NAMESPACE or the namespace of the kubeconfig context"
 release=odoo
@@ -37,11 +34,12 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 helm get values "$release" -n "$namespace" -a -o json >"$work/values.json" 2>/dev/null ||
     fail "no release $release in $namespace"
+[ "$(value .ephemeral)" != true ] || fail "$env is ephemeral: no restore point"
 prefix="$(value .labelPrefix)"
 service="$(value .database.external.host | cut -d. -f1)"
 
 {
-    echo "### Restauration $env"
+    echo "### Restoration $env"
     echo
     echo "- release \`$release\`, namespace \`$namespace\`, statut \`$(release_status)\`"
 } | ci_summary
@@ -58,15 +56,15 @@ if [ -z "$point" ]; then
     if [ -n "$point" ] && serving "$target"; then
         {
             echo
-            echo "**Pas de restauration** : la mise à jour est appliquée et Odoo la sert ; seule la validation a échoué."
-            echo "Vérifier, puis valider le point : \`kubectl -n $namespace label backups.postgresql.cnpg.io $point $prefix/upgrade-state=validated --overwrite\`."
+            echo "**No restoration**: the update is applied and Odoo serves it; only its validation failed."
+            echo "Check, then validate the point: \`kubectl -n $namespace label backups.postgresql.cnpg.io $point $prefix/upgrade-state=validated --overwrite\`."
         } | ci_summary
         fail "update applied and served, restore point $point left pending: validate it by hand"
     fi
     if [ -z "$point" ] && [ "$(release_status)" = deployed ]; then
         # The deploy job failed before helm upgrade (preflight) or after it (smoke test):
         # the deployed release is the one serving, there is nothing to undo
-        echo "**Rien à restaurer** : la release est déployée et aucun point n'est en attente." | ci_summary
+        echo "**Nothing to restore**: the release is deployed and no restore point is pending." | ci_summary
         echo "deploy-restore: $release deployed, no pending restore point: nothing to restore"
         exit 0
     fi
@@ -92,7 +90,7 @@ if [ -z "$point" ]; then
     log "No restore point: database untouched, helm rollback to revision $target_revision"
     helm rollback "$release" "$target_revision" -n "$namespace" --wait --timeout 15m >/dev/null ||
         fail "helm rollback failed"
-    echo "**Retour à la révision $target_revision**, base non modifiée par la mise à jour." | ci_summary
+    echo "**Back to revision $target_revision**, database untouched by the update." | ci_summary
 else
     [ -n "$target_revision" ] || fail "no deployed revision before the restore point $point"
     cluster="$(kubectl -n "$namespace" get backups.postgresql.cnpg.io "$point" -o jsonpath='{.spec.cluster.name}')"
@@ -136,12 +134,12 @@ else
         fail "helm rollback failed (database already restored in $new)"
     {
         echo
-        echo "**Restauré** depuis \`$point\` dans le cluster \`$new\` ; release revenue à la révision $target_revision."
+        echo "**Restored** from \`$point\` into the cluster \`$new\`; release back to revision $target_revision."
         echo
-        echo "- Ancien cluster \`$active\` conservé : l'analyser, puis le désinstaller (runbook)."
-        echo "- Passer \`$new\` au nombre d'instances voulu (\`helm upgrade $new … --set cluster.instances=N\`)."
+        echo "- Previous cluster \`$active\` kept: analyse it, then uninstall it."
+        echo "- Scale \`$new\` to the wanted instances (\`helm upgrade $new … --reuse-values --set cluster.instances=N\`)."
         if [ -n "${2:-}" ]; then
-            echo "- Les saisies faites depuis le point de restauration sont perdues."
+            echo "- What was entered since the restore point is lost."
         fi
     } | ci_summary
     output cluster "$new"

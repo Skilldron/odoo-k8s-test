@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Promotes the last release candidate X.Y.Z-rc.N to X.Y.Z: same digest, no rebuild. This
-# is the only promotion: what goes to production is exactly what was validated in recette.
+# is the only promotion: what goes to production is exactly what was validated in staging.
 # Refused when the candidate was not built from exactly the tagged sources (label
 # odoo.template.tree != tree of HEAD), e.g. main received a hotfix after the last rc.
 #
@@ -26,7 +26,7 @@ print(f"{version}-rc.{max(numbers)}" if numbers else "")
 ' "$version")"
 if [ -z "$rc" ]; then
     echo "No release candidate $version-rc.N in $IMAGE: push release/$version or" \
-        "hotfix/$version first, validate it in recette, then tag." >&2
+        "hotfix/$version first, validate it, then tag." >&2
     exit 1
 fi
 
@@ -46,7 +46,7 @@ if [ "$built" != "$expected" ]; then
         echo "  tree of $rc : ${built:-none}"
         echo "The tagged commit differs from the last release candidate (e.g. a hotfix"
         echo "merged into main but not into the release). Merge what is missing into the"
-        echo "release/hotfix branch, validate the new rc in recette, then tag again."
+        echo "release/hotfix branch, validate the new rc, then tag again."
     } >&2
     exit 1
 fi

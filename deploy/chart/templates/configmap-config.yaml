@@ -12,7 +12,7 @@ data:
 {{- /*
 Same odoo.conf for the hook Jobs, rendered by the same helper: the pre-upgrade Jobs run
 before Helm applies the ConfigMap above, and must read the configuration of the new
-revision (§6.1).
+revision.
 */}}
 apiVersion: v1
 kind: ConfigMap

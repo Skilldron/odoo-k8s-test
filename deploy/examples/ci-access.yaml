@@ -1,0 +1,109 @@
+# Access of the deployment workflows to one namespace: a ServiceAccount, its Role and a
+# long-lived token. Apply it in each namespace the CI deploys to (review, staging, preprod,
+# production), then produce the KUBECONFIG secret of the GitHub environment with
+# ci-kubeconfig.sh:
+#   kubectl -n <namespace> apply -f deploy/examples/ci-access.yaml
+#
+# The Role covers:
+#   - the resources of the Odoo chart, and the Secrets where Helm stores its releases.
+#     RBAC cannot restrict Secrets by label: the token can read every Secret of the
+#     namespace, application and database passwords included;
+#   - the verbs of the chart's hooks account (Kubernetes only lets the CI create that Role
+#     if it holds them itself): scaling Odoo, CloudNativePG backups, volume snapshots;
+#   - the restore job: installing a CloudNativePG cluster with the "cluster" chart
+#     (Cluster, ObjectStore, ScheduledBackup), switching the stable Service, labelling a
+#     restore point.
+# Nothing outside the namespace. The optional ClusterRole at the end lets the preflight
+# checks read the storage and snapshot classes; without it they are skipped.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: odoo-deploy
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: odoo-deploy-token
+  annotations:
+    kubernetes.io/service-account.name: odoo-deploy
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: odoo-deploy
+rules:
+  - apiGroups: [""]
+    resources: [configmaps, secrets, services, serviceaccounts, persistentvolumeclaims]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods, pods/log, events]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments/scale]
+    verbs: [get, patch, update]
+  # Read by helm --wait to compute the rollout status of the Deployment
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [httproutes]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters, backups, scheduledbackups]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [barmancloud.cnpg.io]
+    resources: [objectstores]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshots]
+    verbs: [get, list, watch, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: odoo-deploy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: odoo-deploy
+subjects:
+  - kind: ServiceAccount
+    name: odoo-deploy
+# Optional, cluster-wide and read-only, once per cluster (replace <namespace> by each
+# namespace of the CI in the subjects):
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: ClusterRole
+# metadata:
+#   name: odoo-deploy-read-classes
+# rules:
+#   - apiGroups: [storage.k8s.io]
+#     resources: [storageclasses]
+#     verbs: [get]
+#   - apiGroups: [snapshot.storage.k8s.io]
+#     resources: [volumesnapshotclasses]
+#     verbs: [get]
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: ClusterRoleBinding
+# metadata:
+#   name: odoo-deploy-read-classes
+# roleRef:
+#   apiGroup: rbac.authorization.k8s.io
+#   kind: ClusterRole
+#   name: odoo-deploy-read-classes
+# subjects:
+#   - {kind: ServiceAccount, name: odoo-deploy, namespace: <namespace>}

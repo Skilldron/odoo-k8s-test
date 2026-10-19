@@ -1,9 +1,9 @@
-# Stable Service of the database (§4): Odoo connects to odoo-db (database.external.host),
+# Stable Service of the database: Odoo connects to odoo-db (database.external.host),
 # whatever the active CNPG cluster. Applied once by the administrator, outside any Helm
 # release: uninstalling an old cluster must not take it away.
-#   kubectl -n <project>-prod apply -f deploy/examples/database-service.yaml
-# A restoration (ci/deploy-restore.sh) switches it to the restored cluster:
-#   kubectl -n <project>-prod patch service odoo-db \
+#   kubectl -n <namespace> apply -f examples/database-service.yaml
+# A restoration (docs/operations.md) switches it to the restored cluster:
+#   kubectl -n <namespace> patch service odoo-db \
 #     -p '{"spec":{"selector":{"cnpg.io/cluster":"odoo-db-r<N>"}}}'
 apiVersion: v1
 kind: Service

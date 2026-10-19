@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# End-to-end scenarios of the chart and of the deployment scripts (phases 2, 3 and 3 bis of
-# docs/plans/k8s-deployment.md) on a local kind cluster. Installs, for the test only, a
+# End-to-end scenarios of the chart and of the deployment scripts on a local kind cluster. Installs, for the test only, a
 # local registry (real image digests), snapshot-controller, csi-driver-host-path,
 # cert-manager, CNPG with the Barman Cloud plugin, the Gateway API CRDs and MinIO. This is
-# not a reference cluster installation. The recette database is installed apart, as an
-# administrator would, with the CNPG "cluster" chart and deploy/examples (declared role,
+# not a reference cluster installation. The staging database is installed apart, as an
+# administrator would, with the CNPG "cluster" chart and deploy/chart/examples (declared role,
 # stable Service, volumeSnapshot patch).
 #
 # Builds three variants of the prod image (dev_sample with a new field, the same with a
 # broken view, a fix) and deploys them with ci/deploy.sh and ci/deploy-restore.sh: review
-# install, restart, new image (reset), same image again, cap; guards; recette first
+# install, restart, new image (reset), same image again, cap; guards; staging first
 # installation, update with its restore point, broken update and automatic restoration,
 # retry after a failure, retention, failed snapshots, orphan restore point, filestore
-# without PVC; ci/review-sweep.sh on a fake list of pull requests. Failures are injected
+# without PVC, neutralization; ci/review-sweep.sh on a fake list of pull requests. The CI
+# scripts run with the deployment account of deploy/examples/ci-access.yaml. Failures are injected
 # with helm upgrade run by hand, as an operator could.
 #
 # Uses its own kubeconfig and Helm home: the current kubectl context and Helm repositories
@@ -73,7 +73,7 @@ check() { # check <description> <command...>
         results+=("| $description | ok |")
     else
         echo "FAIL $description" >&2
-        results+=("| $description | **échec** |")
+        results+=("| $description | **failed** |")
         failures=$((failures + 1))
     fi
 }
@@ -177,36 +177,42 @@ EOF
     kubectl -n minio rollout status deploy/minio --timeout=300s >/dev/null
 
     # Fresh namespaces and bucket at every run (a kept cluster holds the previous run)
-    kubectl delete namespace e2e-review e2e-recette trial --ignore-not-found --wait \
+    kubectl delete namespace e2e-review e2e-staging trial --ignore-not-found --wait \
         --timeout=600s >/dev/null
+    kubectl delete clusterrole,clusterrolebinding odoo-deploy-read-classes --ignore-not-found >/dev/null
     kubectl -n minio run mc --rm -i --restart=Never --image="$MC_IMAGE" \
         --env MC_HOST_m=http://e2e:e2e-minio-password@minio:9000 -- \
         rb --force m/backups >/dev/null 2>&1 || true
     kubectl -n minio run mc --rm -i --restart=Never --image="$MC_IMAGE" \
         --env MC_HOST_m=http://e2e:e2e-minio-password@minio:9000 -- mb -p m/backups >/dev/null 2>&1
-    for ns in e2e-review e2e-recette; do
+    for ns in e2e-review e2e-staging; do
         kubectl create namespace "$ns" >/dev/null
         kubectl label --overwrite namespace "$ns" pod-security.kubernetes.io/enforce=restricted >/dev/null
+        # The CI scripts run with the deployment account of deploy/examples, as on GitHub
+        kubectl -n "$ns" apply -f deploy/examples/ci-access.yaml >/dev/null
+        deploy/examples/ci-kubeconfig.sh "$ns" >"$work/ci-$ns.kubeconfig"
     done
-    # Recette prerequisites (§4): application Secret, credentials of the declared role
+    kubectl create clusterrole odoo-deploy-read-classes --verb=get \
+        --resource=storageclasses.storage.k8s.io,volumesnapshotclasses.snapshot.storage.k8s.io >/dev/null
+    kubectl create clusterrolebinding odoo-deploy-read-classes --clusterrole=odoo-deploy-read-classes \
+        --serviceaccount=e2e-review:odoo-deploy --serviceaccount=e2e-staging:odoo-deploy >/dev/null
+    # Staging prerequisites: application Secret, credentials of the declared role
     # odoo, S3 credentials of the database, stable Service
-    kubectl -n e2e-recette create secret generic odoo-app \
-        --from-literal=admin-passwd="$(openssl rand -hex 16)" \
-        --from-literal=admin-user-password="$(openssl rand -hex 16)" >/dev/null
-    deploy/examples/database-credentials.example.sh e2e-recette >/dev/null
-    kubectl -n e2e-recette create secret generic odoo-db-s3 \
+    deploy/chart/examples/app-secret.example.sh e2e-staging >/dev/null
+    deploy/chart/examples/database-credentials.example.sh e2e-staging >/dev/null
+    kubectl -n e2e-staging create secret generic odoo-db-s3 \
         --from-literal=ACCESS_KEY_ID=e2e --from-literal=ACCESS_SECRET_KEY=e2e-minio-password >/dev/null
-    kubectl -n e2e-recette apply -f deploy/examples/database-service.yaml >/dev/null
+    kubectl -n e2e-staging apply -f deploy/chart/examples/database-service.yaml >/dev/null
 }
 
-# The database of the recette, installed apart with the CNPG cluster chart (an
+# The database of the staging, installed apart with the CNPG cluster chart (an
 # administrator's task)
 install_database() { # install_database <ns> <release> [helm args...]
     local ns="$1" release="$2"
     shift 2
     helm upgrade --install "$release" cluster --repo https://cloudnative-pg.github.io/charts \
         --version "$CNPG_CLUSTER_CHART_VERSION" -n "$ns" \
-        -f deploy/examples/cnpg-cluster.values.yaml \
+        -f deploy/chart/examples/cnpg-cluster.values.yaml \
         --set fullnameOverride="$release" --set cluster.storage.size=2Gi \
         --set cluster.storage.storageClass=csi-hostpath-sc \
         --set backups.endpointURL=http://minio.minio:9000 \
@@ -271,14 +277,16 @@ ci_env() { # ci_env <command...>: a CI script with the test settings; its log in
     # $work/ci.log, its outputs in $work/ci.out, its job summary in $work/ci.md
     : >"$work/ci.out"
     : >"$work/ci.md"
-    env NAMESPACE="$ns" PR_NUMBER="${rel#pr-}" SMOKE=none EXTRA_VALUES="$work/kind-values.yaml" \
+    local number=""
+    case "$rel" in pr-*) number="${rel#pr-}" ;; esac
+    env KUBECONFIG="$work/ci-$ns.kubeconfig" NAMESPACE="$ns" PR_NUMBER="$number" SMOKE=none EXTRA_VALUES="${EXTRA:-$work/kind-values.yaml}" \
         REVIEW_MAX_APPS="${REVIEW_MAX_APPS:-5}" DEPLOY_TIMEOUT=20m GITHUB_OUTPUT="$work/ci.out" \
         GITHUB_STEP_SUMMARY="$work/ci.md" "$@" >"$work/ci.log" 2>&1 && return 0
     tail -4 "$work/ci.log" | sed 's/^/    /' >&2
     return 1
 }
 deploy() { ci_env ci/deploy.sh "$1" "$repo@$2"; } # deploy <env> <digest>
-restore() { ci_env ci/deploy-restore.sh recette "$@"; } # restore [point]: the restore job
+restore() { ci_env ci/deploy-restore.sh staging "$@"; } # restore [point]: the restore job
 ci_output() { sed -n "s/^$1=//p" "$work/ci.out" | tail -1; }
 in_log() { grep -q -- "$1" "$work/ci.log"; }
 
@@ -435,184 +443,191 @@ EOF
 ns=e2e-review
 rel=pr-1
 log "Review: install (migrate Job in post-install, Odoo waits for its database)"
-check "review : installation" deploy review "$DIGEST_A"
-check "review : pod Odoo en attente de la base (wait-db)" waited_for_db $ns $rel
-check "review : /web/health et /web/login à 200" http_ok $ns $rel
+check "review: installation" deploy review "$DIGEST_A"
+check "review: Odoo pod waits for its database (wait-db)" waited_for_db $ns $rel
+check "review: /web/health and /web/login answer 200" http_ok $ns $rel
 # shellcheck disable=SC2016 # Markdown backticks
-check "review : identifiants dans le résumé du job" grep -qF 'Connexion : `admin`' "$work/ci.md"
+check "review: login in the job summary" grep -qF 'Login: `admin`' "$work/ci.md"
 review_pw="$(secret_value $ns $rel-secrets review-admin-password)"
 rpc $ns $rel "$review_pw" "call('res.partner', 'create', {'name': 'e2e-marker'})" >/dev/null
-check "review : connexion admin avec le mot de passe généré" \
+check "review: admin login with the generated password" \
     equals "$(marker_count $ns $rel "$review_pw" e2e-marker)" 1
-check "review : base de démo (partenaires de démo présents)" \
+check "review: demo database (demo partners present)" \
     test "$(rpc $ns $rel "$review_pw" "call('res.partner', 'search_count', [])")" -gt 10
-check "review : aucun compte ni Job de point de restauration" \
+check "review: no restore point account nor Job" \
     equals "$(kubectl -n $ns get serviceaccount,job -o name | grep -cE 'hooks|stop-snapshot|validate')" 0
 
 log "Review: restart of the pod"
 migrate_uid="$(job_uid $rel-migrate)"
 kubectl -n $ns delete pod -l "app.kubernetes.io/instance=$rel,app.kubernetes.io/component=odoo" >/dev/null
 kubectl -n $ns rollout status deploy/$rel --timeout=300s >/dev/null
-check "review : redémarrage, aucun nouveau Job" equals "$(job_uid $rel-migrate)" "$migrate_uid"
-check "review : redémarrage, données conservées" \
+check "review: restart, no new Job" equals "$(job_uid $rel-migrate)" "$migrate_uid"
+check "review: restart, data kept" \
     equals "$(marker_count $ns $rel "$review_pw" e2e-marker)" 1
 
 log "Review: new image (new volumes, demo database recreated)"
 pvcs_a="$(pvc_names $ns)"
-check "review : nouvelle image" deploy review "$DIGEST_B"
+check "review: new image" deploy review "$DIGEST_B"
 kubectl -n $ns wait --for=delete --timeout=120s "pvc/$rel-pgdata-$(short "$DIGEST_A")" \
     "pvc/$rel-odoo-data-$(short "$DIGEST_A")" >/dev/null 2>&1 || true
 pvcs_b="$(pvc_names $ns)"
 echo "    volumes: $pvcs_a-> $pvcs_b"
-check "review : volumes neufs ($(short "$DIGEST_B"))" contains "$pvcs_b" "pgdata-$(short "$DIGEST_B")"
-check "review : anciens volumes supprimés" not_contains "$pvcs_b" "$(short "$DIGEST_A")"
-check "review : nouveau pod en attente de la base (wait-db)" waited_for_db $ns $rel
-check "review : mot de passe conservé, base recréée (marqueur absent)" \
+check "review: new volumes ($(short "$DIGEST_B"))" contains "$pvcs_b" "pgdata-$(short "$DIGEST_B")"
+check "review: old volumes deleted" not_contains "$pvcs_b" "$(short "$DIGEST_A")"
+check "review: new pod waits for its database (wait-db)" waited_for_db $ns $rel
+check "review: password kept, database recreated (marker gone)" \
     equals "$(marker_count $ns $rel "$review_pw" e2e-marker)" 0
-check "review : nouveau champ installé" equals "$(has_field $ns $rel "$review_pw" e2e_field)" True
+check "review: new field installed" equals "$(has_field $ns $rel "$review_pw" e2e_field)" True
 
 log "Review: same image again (workflow re-run)"
 rpc $ns $rel "$review_pw" "call('res.partner', 'create', {'name': 'e2e-rerun'})" >/dev/null
 migrate_uid="$(job_uid $rel-migrate)"
-check "review : même image redéployée" deploy review "$DIGEST_B"
-check "review : même image, rien à faire" in_log "Image already deployed"
-check "review : même image, aucun Job relancé" equals "$(job_uid $rel-migrate)" "$migrate_uid"
-check "review : même image, données conservées" \
+check "review: same image deployed again" deploy review "$DIGEST_B"
+check "review: same image, nothing to do" in_log "Image already deployed"
+check "review: same image, no Job run again" equals "$(job_uid $rel-migrate)" "$migrate_uid"
+check "review: same image, data kept" \
     equals "$(marker_count $ns $rel "$review_pw" e2e-rerun)" 1
 
 log "Review: cap of the review apps"
 rel=pr-2
 REVIEW_MAX_APPS=1
-check "review : plafond atteint, nouvelle review app refusée" fails deploy review "$DIGEST_A"
-check "review : message du plafond" in_log "cap of 1 review apps reached"
-check "review : aucune release pr-2" equals "$(helm -n $ns list -q -f '^pr-2$')" ""
+check "review: cap reached, new review app refused" fails deploy review "$DIGEST_A"
+check "review: cap message" in_log "cap of 1 review apps reached"
+check "review: no release pr-2" equals "$(helm -n $ns list -q -f '^pr-2$')" ""
 unset REVIEW_MAX_APPS
 rel=pr-1
 
 log "Guards"
 # shellcheck disable=SC2016 # $PGDATABASE is expanded in the pod
-check "garde-fou : odoo db init refuse une base existante" \
+check "guard: odoo db init refuses an existing database" \
     fails kubectl -n $ns exec deploy/$rel -c odoo -- \
     sh -c '/opt/odoo/entrypoint.sh odoo db init --password x "$PGDATABASE" >/tmp/init.log 2>&1'
-check "garde-fou : message « exists, aborting »" \
+check "guard: message \"exists, aborting\"" \
     kubectl -n $ns exec deploy/$rel -c odoo -- grep -q "exists, aborting" /tmp/init.log
-check "garde-fou : review intacte après le refus" http_ok $ns $rel
-ns=e2e-recette
-check "garde-fou : base ephemeral refusée en recette" \
-    fails helm_raw guard recette "$DIGEST_A" --set database.type=ephemeral
-check "garde-fou : aucune release créée" equals "$(helm -n $ns list -q -f '^guard$')" ""
+check "guard: review app intact after the refusal" http_ok $ns $rel
+ns=e2e-staging
+rel=odoo
+{
+    cat "$work/kind-values.yaml"
+    echo "ephemeral: true"
+    echo "route: {reviewDomain: review.example.com}"
+} >"$work/ephemeral-values.yaml"
+deploy_ephemeral() { EXTRA="$work/ephemeral-values.yaml" deploy staging "$1"; }
+check "guard: ephemeral instance refused outside a pull request" fails deploy_ephemeral "$DIGEST_A"
+check "guard: ephemeral message" in_log "ephemeral must be true for a pull request"
+check "guard: no release created" equals "$(helm -n $ns list -q -f '^odoo$')" ""
 
-# Recette -----------------------------------------------------------------------------
-ns=e2e-recette
+# Staging -----------------------------------------------------------------------------
+ns=e2e-staging
 rel=odoo
 admin_pw="$(secret_value $ns odoo-app admin-user-password)"
-log "Recette: database installed apart (CNPG cluster chart, declared role), NetworkPolicy example"
-check "recette : base installée avec le chart CNPG officiel" install_database $ns odoo-db
-check "recette : rôle odoo déclaré, CREATEDB, non superutilisateur" \
+log "Staging: database installed apart (CNPG cluster chart, declared role), NetworkPolicy example"
+check "staging: database installed with the official CNPG chart" install_database $ns odoo-db
+check "staging: declared role odoo, CREATEDB, not superuser" \
     equals "$(kubectl -n $ns exec odoo-db-1 -c postgres -- psql -tAc \
         "select rolcreatedb::text || rolsuper::text from pg_roles where rolname = 'odoo'")" truefalse
-check "recette : pg_create_restore_point accordé à odoo (base postgres)" \
+check "staging: pg_create_restore_point granted to odoo (database postgres)" \
     equals "$(kubectl -n $ns exec odoo-db-1 -c postgres -- psql -tAc \
         "select has_function_privilege('odoo', 'pg_create_restore_point(text)', 'execute')")" t
-kubectl -n $ns apply -f deploy/examples/database-networkpolicy.yaml >/dev/null
+kubectl -n $ns apply -f deploy/chart/examples/database-networkpolicy.yaml >/dev/null
 
-log "Recette: deployment refused without the volumeSnapshot patch, or with a Retain class"
-check "garde-fou : base sans section volumeSnapshot, déploiement refusé" \
-    fails deploy recette "$DIGEST_A"
-check "garde-fou : message du contrôle préalable" in_log "no restore point possible"
+log "Staging: deployment refused without the volumeSnapshot patch, or with a Retain class"
+check "guard: database without volumeSnapshot section, deployment refused" \
+    fails deploy staging "$DIGEST_A"
+check "guard: preflight message" in_log "no restore point possible"
 enable_snapshots odoo-db e2e-retain
-check "garde-fou : classe de snapshots en Retain, déploiement refusé" fails deploy recette "$DIGEST_A"
-check "garde-fou : message deletionPolicy" in_log "deletionPolicy Retain"
-check "garde-fou : rien déployé" equals "$(helm -n $ns list -q -f '^odoo$')" ""
-check "recette : patch volumeSnapshot de la base (administrateur)" enable_snapshots odoo-db
-check "recette : helm upgrade de la base" install_database $ns odoo-db --set backups.retentionPolicy=31d
-check "recette : patch conservé par helm upgrade" snapshots_enabled odoo-db
+check "guard: snapshot class with Retain, deployment refused" fails deploy staging "$DIGEST_A"
+check "guard: deletionPolicy message" in_log "deletionPolicy Retain"
+check "guard: nothing deployed" equals "$(helm -n $ns list -q -f '^odoo$')" ""
+check "staging: volumeSnapshot patch of the database (administrator)" enable_snapshots odoo-db
+check "staging: helm upgrade of the database" install_database $ns odoo-db --set backups.retentionPolicy=31d
+check "staging: patch kept by helm upgrade" snapshots_enabled odoo-db
 
-log "Recette: first installation (migrate Job in post-install, Odoo creates its database)"
-check "recette : première installation" deploy recette "$DIGEST_A"
+log "Staging: first installation (migrate Job in post-install, Odoo creates its database)"
+check "staging: first installation" deploy staging "$DIGEST_A"
 created_by_post_install() { # the migrate Job ran in post-install and created the database
     equals "$(hook_of_job $rel-migrate)" post-install && fails job_log_has $rel-migrate db-init "exists"
 }
-check "recette : Job migrate en post-install, base créée par db-init" created_by_post_install
-check "recette : pas de point de restauration à la première installation" \
+check "staging: migrate Job in post-install, database created by db-init" created_by_post_install
+check "staging: no restore point at the first installation" \
     equals "$(point_count pending,validated,restored)" 0
-check "recette : /web/health et /web/login à 200" http_ok $ns $rel
-check "recette : admin/admin refusé, mot de passe du Secret accepté" only_password $ns $rel "$admin_pw"
-check "recette : base sans démo" \
+check "staging: /web/health and /web/login answer 200" http_ok $ns $rel
+check "staging: admin/admin refused, password of the Secret accepted" only_password $ns $rel "$admin_pw"
+check "staging: database without demo data" \
     test "$(rpc $ns $rel "$admin_pw" "call('res.partner', 'search_count', [])")" -lt 10
 rpc $ns $rel "$admin_pw" "call('res.partner', 'create', {'name': 'before-update'})" >/dev/null
 
-log "Recette: update (hooks: stop, restore point, migrate, validate)"
-check "recette : mise à jour" deploy recette "$DIGEST_B"
+log "Staging: update (hooks: stop, restore point, migrate, validate)"
+check "staging: update" deploy staging "$DIGEST_B"
 p2="odoo-db-preupgrade-r$(revision)"
-check "recette : point de restauration $p2 validé" equals "$(state_of "$p2")" validated
-check "recette : snapshot de la base et du filestore du point" \
+check "staging: restore point $p2 validated" equals "$(state_of "$p2")" validated
+check "staging: database and filestore snapshots of the point" \
     equals "$(snapshots_of "$p2" | wc -l | tr -d ' ')" 2
-check "recette : snapshot du filestore rattaché à la Backup (UID, sans blockOwnerDeletion)" \
+check "staging: filestore snapshot owned by the Backup (UID, no blockOwnerDeletion)" \
     filestore_owned "$p2"
-check "recette : point nommé dans les WAL avant le snapshot" \
+check "staging: point named in the WAL before the snapshot" \
     job_log_has $rel-stop-snapshot restore-point "$p2"
-check "recette : nouveau champ créé par click-odoo-update" \
+check "staging: new field created by click-odoo-update" \
     equals "$(has_field $ns $rel "$admin_pw" e2e_field)" True
-check "recette : données conservées" equals "$(marker_count $ns $rel "$admin_pw" before-update)" 1
+check "staging: data kept" equals "$(marker_count $ns $rel "$admin_pw" before-update)" 1
 rpc $ns $rel "$admin_pw" "call('res.partner', 'create', {'name': 'after-update'})" >/dev/null
 
-log "Recette: broken module, Odoo stays stopped"
-check "recette : module cassé, déploiement en échec" fails deploy recette "$DIGEST_C"
+log "Staging: broken module, Odoo stays stopped"
+check "staging: broken module, deployment failed" fails deploy staging "$DIGEST_C"
 p3="odoo-db-preupgrade-r$(revision)"
-check "recette : point $p3 en attente (pending)" equals "$(state_of "$p3")" pending
-check "recette : logs du Job migrate (vue cassée) dans le résumé du job" grep -q e2e_missing "$work/ci.md"
-check "recette : Odoo reste arrêté" equals "$(replicas)" 0
+check "staging: point $p3 pending" equals "$(state_of "$p3")" pending
+check "staging: logs of the migrate Job (broken view) in the job summary" grep -q e2e_missing "$work/ci.md"
+check "staging: Odoo stays stopped" equals "$(replicas)" 0
 # A write after the restore point, which the restoration must not bring back
 psql_in odoo-db "create table e2e_after_restore_point (id int)" >/dev/null
 
-log "Recette: retry after the failure, no new restore point"
-check "recette : relance du module cassé, en échec" fails deploy recette "$DIGEST_C"
-check "recette : relance, pas de nouveau point" \
+log "Staging: retry after the failure, no new restore point"
+check "staging: retry of the broken module, failed" fails deploy staging "$DIGEST_C"
+check "staging: retry, no new point" \
     job_log_has $rel-stop-snapshot stop "$p3 still pending (previous attempt)"
-check "recette : relance, un seul point en attente" equals "$(points_in pending)" "$p3 "
+check "staging: retry, a single pending point" equals "$(points_in pending)" "$p3 "
 
-log "Recette: restore job (new cluster from the pending restore point)"
-check "restauration : job restore" restore
+log "Staging: restore job (new cluster from the pending restore point)"
+check "restore: restore job" restore
 r3="odoo-db-r${p3##*-r}"
-check "restauration : nouveau cluster $r3, Service stable basculé" equals "$(service_cluster)" "$r3"
-check "restauration : volume de $r3 créé depuis le snapshot du point" \
+check "restore: new cluster $r3, stable Service switched" equals "$(service_cluster)" "$r3"
+check "restore: volume of $r3 created from the snapshot of the point" \
     equals "$(kubectl -n $ns get pvc "$r3-1" -o jsonpath='{.spec.dataSource.name}')" "$p3"
-check "restauration : point $p3 restored" equals "$(state_of "$p3")" restored
-check "restauration : section volumeSnapshot recopiée sur $r3" snapshots_enabled "$r3"
-check "restauration : image d'avant le point" \
+check "restore: point $p3 restored" equals "$(state_of "$p3")" restored
+check "restore: volumeSnapshot section copied to $r3" snapshots_enabled "$r3"
+check "restore: image from before the point" \
     equals "$(helm get values $rel -n $ns -o json | jq -r .image.digest)" "$DIGEST_B"
-check "restauration : /web/health et /web/login à 200" http_ok $ns $rel
-check "restauration : données du point de restauration présentes" \
+check "restore: /web/health and /web/login answer 200" http_ok $ns $rel
+check "restore: data of the restore point present" \
     equals "$(marker_count $ns $rel "$admin_pw" after-update)" 1
-check "restauration : écriture postérieure au point absente" \
+check "restore: write made after the point absent" \
     equals "$(psql_in "$r3" "select to_regclass('e2e_after_restore_point') is null")" t
-check "restauration : même mot de passe par le Service stable (rôle déclaré)" \
+check "restore: same password through the stable Service (declared role)" \
     only_password $ns $rel "$admin_pw"
-check "restauration : ancien cluster conservé" exists $ns cluster/odoo-db
-check "restauration : archivage des WAL de $r3" archive_current_wal $ns "$r3"
+check "restore: previous cluster kept" exists $ns cluster/odoo-db
+check "restore: WAL archiving of $r3" archive_current_wal $ns "$r3"
 
-log "Recette: next update, on the restored cluster"
-check "recette : mise à jour (correctif)" deploy recette "$DIGEST_D"
+log "Staging: next update, on the restored cluster"
+check "staging: update (fix)" deploy staging "$DIGEST_D"
 p6="$r3-preupgrade-r$(revision)"
-check "recette : point $p6 pris sur $r3 et validé" equals "$(state_of "$p6")" validated
-check "recette : champ du correctif" equals "$(has_field $ns $rel "$admin_pw" e2e_fix)" True
+check "staging: point $p6 taken on $r3 and validated" equals "$(state_of "$p6")" validated
+check "staging: field of the fix" equals "$(has_field $ns $rel "$admin_pw" e2e_fix)" True
 
-log "Recette: failure then successful retry, which validates the first point"
-check "recette : module cassé, en échec" fails deploy recette "$DIGEST_C"
+log "Staging: failure then successful retry, which validates the first point"
+check "staging: broken module, failed" fails deploy staging "$DIGEST_C"
 p7="$r3-preupgrade-r$(revision)"
-check "recette : correctif, réussi" deploy recette "$DIGEST_D"
-check "recette : le correctif n'a pas pris de nouveau point" \
+check "staging: fix, succeeded" deploy staging "$DIGEST_D"
+check "staging: the fix took no new point" \
     job_log_has $rel-stop-snapshot stop "$p7 still pending (previous attempt)"
-check "recette : premier point $p7 validé" equals "$(state_of "$p7")" validated
+check "staging: first point $p7 validated" equals "$(state_of "$p7")" validated
 
-log "Recette: retention (3 restore points kept, a Backup takes its snapshots along)"
-check "rétention : trois points gardés ($p3 $p6 $p7)" \
+log "Staging: retention (3 restore points kept, a Backup takes its snapshots along)"
+check "retention: three points kept ($p3 $p6 $p7)" \
     equals "$(points_in validated,restored)" "$p3 $p6 $p7 "
-check "rétention : $p2 supprimé avec ses snapshots" gone "$p2"
-check "rétention : VolumeSnapshotContent de $p2 supprimés (classe en Delete)" contents_gone "$p2"
+check "retention: $p2 deleted with its snapshots" gone "$p2"
+check "retention: VolumeSnapshotContents of $p2 deleted (Delete class)" contents_gone "$p2"
 
-log "Recette: a purge error does not fail the update"
+log "Staging: a purge error does not fail the update"
 kubectl apply -f - >/dev/null <<EOF
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -635,103 +650,109 @@ spec:
 EOF
 kubectl -n $ns label backups.postgresql.cnpg.io "$p3" e2e-protect=true >/dev/null
 sleep 5
-check "rétention : mise à jour réussie malgré une purge refusée" \
-    helm_raw $rel recette "$DIGEST_D" --set odoo.config.options.max_cron_threads=2 --wait
-check "rétention : erreur de purge signalée dans les logs" \
+check "retention: update succeeded despite a refused purge" \
+    helm_raw $rel staging "$DIGEST_D" --set odoo.config.options.max_cron_threads=2 --wait
+check "retention: purge error reported in the logs" \
     job_log_has $rel-validate validate "WARNING: could not delete the restore point $p3"
-check "rétention : point protégé conservé" equals "$(state_of "$p3")" restored
+check "retention: protected point kept" equals "$(state_of "$p3")" restored
 kubectl -n $ns label backups.postgresql.cnpg.io "$p3" e2e-protect- >/dev/null
 kubectl delete validatingadmissionpolicybinding,validatingadmissionpolicy e2e-protect-backups >/dev/null
 
-log "Recette: database snapshot failure (no restore point, database untouched)"
+log "Staging: database snapshot failure (no restore point, database untouched)"
 rpc $ns $rel "$admin_pw" "call('res.partner', 'create', {'name': 'before-snapshot-failure'})" >/dev/null
 kubectl -n $ns patch "cluster/$r3" --type json \
     -p '[{"op": "remove", "path": "/spec/backup/volumeSnapshot"}]' >/dev/null
-check "snapshot de la base en échec : mise à jour en échec" \
-    fails helm_raw $rel recette "$DIGEST_D" --set odoo.config.options.max_cron_threads=3 \
+check "failed database snapshot: update failed" \
+    fails helm_raw $rel staging "$DIGEST_D" --set odoo.config.options.max_cron_threads=3 \
     --set restorePoints.timeoutSeconds=60 --wait
-check "snapshot de la base en échec : stop-snapshot en échec" \
+check "failed database snapshot: stop-snapshot failed" \
     equals "$(kubectl -n $ns get job $rel-stop-snapshot -o jsonpath='{.status.failed}')" 1
 enable_snapshots "$r3"
-check "snapshot de la base en échec : job restore, helm rollback seul" restore
-check "snapshot de la base en échec : aucun point restauré" in_log "No restore point"
-check "snapshot de la base en échec : base intacte, Odoo répond" \
+check "failed database snapshot: restore job, helm rollback only" restore
+check "failed database snapshot: no point restored" in_log "No restore point"
+check "failed database snapshot: database intact, Odoo answers" \
     equals "$(marker_count $ns $rel "$admin_pw" before-snapshot-failure)" 1
 
-log "Recette: filestore snapshot failure (incomplete restore point)"
-check "snapshot du filestore en échec : mise à jour en échec" \
-    fails helm_raw $rel recette "$DIGEST_D" --set odoo.config.options.max_cron_threads=4 \
+log "Staging: filestore snapshot failure (incomplete restore point)"
+check "failed filestore snapshot: update failed" \
+    fails helm_raw $rel staging "$DIGEST_D" --set odoo.config.options.max_cron_threads=4 \
     --set restorePoints.volumeSnapshotClass=e2e-missing --set restorePoints.timeoutSeconds=60 --wait
 incomplete="$(points_in pending)"
 echo "    incomplete pending point(s): $incomplete"
-check "snapshot du filestore en échec : point incomplet, non restauré" restore
-check "snapshot du filestore en échec : helm rollback seul" in_log "No restore point"
-check "snapshot du filestore en échec : base intacte, Odoo répond" \
+check "failed filestore snapshot: incomplete point, not restored" restore
+check "failed filestore snapshot: helm rollback only" in_log "No restore point"
+check "failed filestore snapshot: database intact, Odoo answers" \
     equals "$(marker_count $ns $rel "$admin_pw" before-snapshot-failure)" 1
-check "mise à jour suivante" helm_raw $rel recette "$DIGEST_D" \
+check "next update" helm_raw $rel staging "$DIGEST_D" \
     --set odoo.config.options.max_cron_threads=5 --wait
 all_gone() { # all_gone <backup...>
     local point
     for point in "$@"; do gone "$point" || return 1; done
 }
 # shellcheck disable=SC2086 # list of names
-check "mise à jour suivante : points incomplets supprimés" all_gone $incomplete
-check "mise à jour suivante : aucun point en attente" equals "$(point_count pending)" 0
-check "rétention : trois points au plus" equals "$(point_count validated,restored)" 3
+check "next update: incomplete points deleted" all_gone $incomplete
+check "next update: no pending point" equals "$(point_count pending)" 0
+check "retention: three points at most" equals "$(point_count validated,restored)" 3
 
-log "Recette: restore job with the release deployed and no pending point (nothing to undo)"
+log "Staging: restore job with the release deployed and no pending point (nothing to undo)"
 before="$(revision)"
-check "rien à restaurer : job restore sans effet" restore
-check "rien à restaurer : message" in_log "nothing to restore"
-check "rien à restaurer : révision inchangée" equals "$(revision)" "$before"
+check "nothing to restore: restore job without effect" restore
+check "nothing to restore: message" in_log "nothing to restore"
+check "nothing to restore: revision unchanged" equals "$(revision)" "$before"
 
-log "Recette: orphan restore point (validated by nobody after a successful update)"
+log "Staging: orphan restore point (validated by nobody after a successful update)"
 orphan="$(points_in validated | awk '{print $NF}')"
 kubectl -n $ns label backups.postgresql.cnpg.io "$orphan" "$PREFIX/upgrade-state=pending" --overwrite >/dev/null
-check "point orphelin : la CI refuse la mise à jour" fails deploy recette "$DIGEST_B"
-check "point orphelin : message de la CI" in_log "is still pending while the release is deployed"
-check "point orphelin : stop-snapshot refuse une mise à jour à la main" \
-    fails helm_raw $rel recette "$DIGEST_D" --set odoo.config.options.max_cron_threads=6
-check "point orphelin : message de stop-snapshot" \
+check "orphan point: the CI refuses the update" fails deploy staging "$DIGEST_B"
+check "orphan point: CI message" in_log "is still pending while the release is deployed"
+check "orphan point: stop-snapshot refuses a manual update" \
+    fails helm_raw $rel staging "$DIGEST_D" --set odoo.config.options.max_cron_threads=6
+check "orphan point: stop-snapshot message" \
     job_log_has $rel-stop-snapshot stop "its validation failed"
-check "point orphelin : Odoo continue de servir" http_ok $ns $rel
-check "point orphelin : le job restore ne restaure pas" fails restore
-check "point orphelin : message du job restore" in_log "update applied and served"
-check "point orphelin : Service stable inchangé" equals "$(service_cluster)" "$r3"
+check "orphan point: Odoo keeps serving" http_ok $ns $rel
+check "orphan point: the restore job does not restore" fails restore
+check "orphan point: restore job message" in_log "update applied and served"
+check "orphan point: stable Service unchanged" equals "$(service_cluster)" "$r3"
 kubectl -n $ns label backups.postgresql.cnpg.io "$orphan" "$PREFIX/upgrade-state=validated" --overwrite >/dev/null
 
-log "Recette: filestore without PVC (restore point = the Backup only)"
-check "sans PVC : mise à jour" helm_raw $rel recette "$DIGEST_D" \
+log "Staging: filestore without PVC (restore point = the Backup only)"
+check "no PVC: update" helm_raw $rel staging "$DIGEST_D" \
     --set odoo.persistence.enabled=false --wait
 pn="$(points_in validated | awk '{print $NF}')"
-check "sans PVC : point $pn validé, snapshot de la base seul" \
+check "no PVC: point $pn validated, database snapshot only" \
     equals "$(snapshots_of "$pn" | grep -c .)/$(snapshots_of "$pn" | grep -c -- -filestore)" 1/0
-check "retour au PVC" helm_raw $rel recette "$DIGEST_D" --wait
-check "retour au PVC : filestore d'origine" \
+check "back to the PVC" helm_raw $rel staging "$DIGEST_D" --wait
+check "back to the PVC: original filestore" \
     equals "$(kubectl -n $ns get deploy $rel -o jsonpath='{.spec.template.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}')" "$rel-odoo-data"
-check "rétention : trois points au plus à la fin" equals "$(point_count validated,restored)" 3
+
+log "Staging: update after a copy of production data, neutralized (neutralize=true)"
+check "neutralization: update with neutralize=true" \
+    helm_raw $rel staging "$DIGEST_D" --set neutralize=true --wait
+check "neutralization: database neutralized by the migrate Job" equals \
+    "$(psql_in "$r3" "select count(*) from ir_config_parameter where key = 'database.is_neutralized'")" 1
+check "retention: three points at most at the end" equals "$(point_count validated,restored)" 3
 
 # Review apps sweep --------------------------------------------------------------------
 ns=e2e-review
 rel=pr-1
 log "Review apps sweep (fake list of pull requests)"
 echo "1 open" >"$work/prs"
-check "sweep : PR ouverte, review app gardée" ci_env env PR_STATES_FILE="$work/prs" ci/review-sweep.sh
-check "sweep : pr-1 toujours là" exists $ns deploy/pr-1
+check "sweep: open pull request, review app kept" ci_env env PR_STATES_FILE="$work/prs" ci/review-sweep.sh
+check "sweep: pr-1 still there" exists $ns deploy/pr-1
 echo "1 closed" >"$work/prs"
-check "sweep : DRY_RUN, rien supprimé" \
+check "sweep: DRY_RUN, nothing removed" \
     ci_env env PR_STATES_FILE="$work/prs" DRY_RUN=true ci/review-sweep.sh
-check "sweep : pr-1 toujours là après DRY_RUN" exists $ns deploy/pr-1
-check "sweep : PR fermée, review app supprimée" ci_env env PR_STATES_FILE="$work/prs" ci/review-sweep.sh
-check "sweep : release, volumes et ressources de hook supprimés" \
+check "sweep: pr-1 still there after DRY_RUN" exists $ns deploy/pr-1
+check "sweep: closed pull request, review app removed" ci_env env PR_STATES_FILE="$work/prs" ci/review-sweep.sh
+check "sweep: release, volumes and hook resources removed" \
     equals "$(helm -n $ns list -q -f '^pr-1$')/$(kubectl -n $ns get pvc,jobs,configmaps -o name |
         grep -v kube-root-ca)" "/"
-check "review-remove : review app absente, rien à faire" ci_env ci/review-remove.sh 1
+check "review-remove: no review app, nothing to do" ci_env ci/review-remove.sh 1
 
 {
-    echo "### Chart Helm, scénarios e2e (kind)"
+    echo "### Helm chart, e2e scenarios (kind)"
     echo
-    echo "| Scénario | Résultat |"
+    echo "| Scenario | Result |"
     echo "| --- | --- |"
     printf '%s\n' "${results[@]}"
 } | ci_summary

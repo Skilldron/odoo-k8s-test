@@ -1,7 +1,7 @@
 {{- /*
-Filestore and sessions (/var/lib/odoo), §3.4. Review: named after the digest, a new image
-gets a new volume and Helm deletes the old one. Recette/prod: kept by Helm; a manual
-restoration of the filestore uses odoo.persistence.existingClaim instead.
+Filestore and sessions (/var/lib/odoo). Ephemeral instance: named after the digest, a new
+image gets a new volume and Helm deletes the old one. Persistent instance: kept by Helm; a
+restored filestore is used through odoo.persistence.existingClaim instead.
 */ -}}
 {{- $p := .Values.odoo.persistence }}
 {{- if and $p.enabled (not $p.existingClaim) }}
@@ -12,7 +12,7 @@ metadata:
   labels:
     {{- include "odoo.labels" . | nindent 4 }}
     app.kubernetes.io/component: odoo
-  {{- if not (include "odoo.review" .) }}
+  {{- if not (include "odoo.ephemeral" .) }}
   annotations:
     helm.sh/resource-policy: keep
   {{- end }}

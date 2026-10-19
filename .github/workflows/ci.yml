@@ -2,12 +2,12 @@
 #   Quality     quality.yml   pre-commit, chart
 #   Image       image.yml     base -> build -> tests + smoke -> publish
 #   Promotion   promote.yml   tag vX.Y.Z: last release candidate -> X.Y.Z
-#   Deployment  deploy.yml    review (pull request), recette (release/*, hotfix/*),
-#                             production (tag, after the promotion)
+#   Deployment  deploy.yml    review (pull request), staging (release/*), preprod
+#                             (hotfix/*, then the production image), production (tag)
 # Jobs are thin wrappers around ci/*.sh, which run the same way locally.
 # Deployments are opt-in: the repository variable DEPLOY_ENVIRONMENTS lists the enabled
-# environments (e.g. "review recette production"), each one a GitHub environment holding
-# the KUBECONFIG secret (docs/plans/k8s-deployment.md §4).
+# environments (e.g. "review staging preprod production"), each one a GitHub environment
+# holding the KUBECONFIG secret (see docs/deployment.md).
 name: CI
 
 on:
@@ -47,7 +47,7 @@ jobs:
       packages: write
 
   review:
-    # Internal pull request, not a draft, not a release or hotfix (deployed to recette)
+    # Internal pull request, not a draft, not a release or hotfix (deployed to staging or preprod)
     if: >-
       contains(vars.DEPLOY_ENVIRONMENTS, 'review') && github.event_name ==
       'pull_request' && github.event.pull_request.head.repo.full_name ==
@@ -64,19 +64,18 @@ jobs:
       digest: ${{ needs.image.outputs.digest }}
       pr-number: ${{ github.event.number }}
 
-  recette:
-    # The last release candidate pushed is the one in recette
+  staging:
+    # The last release candidate pushed is the one in staging
     if: >-
-      contains(vars.DEPLOY_ENVIRONMENTS, 'recette') && github.event_name == 'push' &&
-      (startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref,
-      'refs/heads/hotfix/'))
+      contains(vars.DEPLOY_ENVIRONMENTS, 'staging') && github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/heads/release/')
     needs: image
     concurrency:
-      group: deploy-recette
+      group: deploy-staging
       cancel-in-progress: false
     uses: ./.github/workflows/deploy.yml
     with:
-      environment: recette
+      environment: staging
       digest: ${{ needs.image.outputs.digest }}
 
   production:
@@ -89,3 +88,20 @@ jobs:
     with:
       environment: production
       digest: ${{ needs.promote.outputs.digest }}
+
+  preprod:
+    # Mirror of the production: the release candidates of a hotfix (it goes straight to
+    # production), then the production image once it is deployed
+    if: >-
+      !cancelled() && contains(vars.DEPLOY_ENVIRONMENTS, 'preprod') &&
+      ((startsWith(github.ref, 'refs/heads/hotfix/') && needs.image.result == 'success')
+      || (github.ref_type == 'tag' && needs.promote.result == 'success' &&
+      needs.production.result != 'failure'))
+    needs: [image, promote, production]
+    concurrency:
+      group: deploy-preprod
+      cancel-in-progress: false
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: preprod
+      digest: ${{ needs.promote.outputs.digest || needs.image.outputs.digest }}

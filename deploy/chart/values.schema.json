@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["environment", "image", "odoo", "database"],
+  "required": ["image", "odoo", "database"],
   "definitions": {
     "iniScalar": {
       "anyOf": [
@@ -26,7 +26,9 @@
     }
   },
   "properties": {
-    "environment": {"enum": ["review", "recette", "production"]},
+    "environment": {"type": "string", "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"},
+    "ephemeral": {"type": "boolean"},
+    "neutralize": {"type": "boolean"},
     "project": {"type": "string", "pattern": "^[a-z0-9-]+$"},
     "labelPrefix": {
       "type": "string",
@@ -97,9 +99,8 @@
     },
     "database": {
       "type": "object",
-      "required": ["type", "name"],
+      "required": ["name"],
       "properties": {
-        "type": {"enum": ["ephemeral", "external"]},
         "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]+$"},
         "external": {
           "type": "object",
@@ -134,26 +135,13 @@
       }
     }
   },
-  "allOf": [
-    {
-      "if": {
-        "properties": {"database": {"properties": {"type": {"const": "ephemeral"}}}}
-      },
-      "then": {"properties": {"environment": {"const": "review"}}}
-    },
-    {
-      "if": {"properties": {"environment": {"const": "review"}}},
-      "then": {
-        "properties": {"database": {"properties": {"type": {"const": "ephemeral"}}}}
-      },
-      "else": {
-        "properties": {
-          "secrets": {
-            "required": ["existingSecret"],
-            "properties": {"existingSecret": {"minLength": 1}}
-          }
-        }
+  "if": {"properties": {"ephemeral": {"const": true}}, "required": ["ephemeral"]},
+  "else": {
+    "properties": {
+      "secrets": {
+        "required": ["existingSecret"],
+        "properties": {"existingSecret": {"minLength": 1}}
       }
     }
-  ]
+  }
 }

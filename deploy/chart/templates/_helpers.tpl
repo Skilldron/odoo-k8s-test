@@ -7,27 +7,27 @@
 {{ .Values.image.repository }}@{{ .Values.image.digest }}
 {{- end }}
 
-{{- define "odoo.review" -}}
-{{- if eq .Values.environment "review" }}true{{ end }}
+{{- define "odoo.ephemeral" -}}
+{{- if .Values.ephemeral }}true{{ end }}
 {{- end }}
 
-{{/* Filestore volume: review volumes carry the digest (reset on a new image) */}}
+{{/* Filestore volume: ephemeral volumes carry the digest (reset on a new image) */}}
 {{- define "odoo.dataClaim" -}}
 {{- if .Values.odoo.persistence.existingClaim -}}
 {{ .Values.odoo.persistence.existingClaim }}
-{{- else if include "odoo.review" . -}}
+{{- else if include "odoo.ephemeral" . -}}
 {{ .Release.Name }}-odoo-data-{{ include "odoo.shortDigest" . }}
 {{- else -}}
 {{ .Release.Name }}-odoo-data
 {{- end }}
 {{- end }}
 
-{{/* Restore points (recette, production) */}}
+{{/* Restore points (persistent instances) */}}
 {{- define "odoo.restorePoints" -}}
-{{- if not (include "odoo.review" .) }}true{{ end }}
+{{- if not (include "odoo.ephemeral" .) }}true{{ end }}
 {{- end }}
 
-{{/* ConfigMap of the hook Jobs: same content, created before them (§6.1) */}}
+{{/* ConfigMap of the hook Jobs: same content, created before them */}}
 {{- define "odoo.hookConfig" -}}
 {{ .Release.Name }}-odoo-conf-hook
 {{- end }}
@@ -54,7 +54,7 @@
 {{- end }}
 
 {{- define "odoo.host" -}}
-{{- if include "odoo.review" . -}}
+{{- if include "odoo.ephemeral" . -}}
 {{ .Values.project }}-{{ .Release.Name }}.{{ .Values.route.reviewDomain }}
 {{- else -}}
 {{ .Values.route.host }}
@@ -62,7 +62,7 @@
 {{- end }}
 
 {{- define "odoo.mailpitHost" -}}
-{{- if include "odoo.review" . -}}
+{{- if include "odoo.ephemeral" . -}}
 {{ .Values.project }}-{{ .Release.Name }}-mail.{{ .Values.route.reviewDomain }}
 {{- else -}}
 {{ .Values.route.mailpitHost }}
@@ -79,7 +79,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{ include "odoo.selectorLabels" . }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+{{- if .Values.environment }}
 {{ .Values.labelPrefix }}/environment: {{ .Values.environment }}
+{{- end }}
 {{- end }}
 
 {{/* odoo.conf values: lists joined by commas, booleans as True/False, whole numbers as integers */}}
@@ -103,7 +105,7 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end }}
 {{- end }}
 
-{{/* odoo.conf (§6.1): [options] first (imposed options, then the values), then the
+{{/* odoo.conf: [options] first (imposed options, then the values), then the
 other sections in alphabetical order */}}
 {{- define "odoo.conf" -}}
 [options]
@@ -136,48 +138,42 @@ smtp_port = 1025
 {{- end }}
 {{- end }}
 
-{{/* Guards (§6.3), evaluated by the ConfigMap, which every render contains */}}
+{{/* Guards, evaluated by the ConfigMap, which every render contains */}}
 {{- define "odoo.validate" -}}
 {{- $v := .Values -}}
-{{- if not (has $v.environment (list "review" "recette" "production")) -}}
-{{- fail "environment must be review, recette or production" -}}
+{{- if and $v.environment (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $v.environment)) -}}
+{{- fail "environment must be a DNS label (lowercase letters, digits, hyphens)" -}}
 {{- end -}}
 {{- if not (regexMatch "^sha256:[a-f0-9]{64}$" $v.image.digest) -}}
 {{- fail "image.digest must be sha256:<64 hex>" -}}
 {{- end -}}
-{{- if and (eq $v.database.type "ephemeral") (ne $v.environment "review") -}}
-{{- fail "database.type=ephemeral is reserved to environment=review" -}}
+{{- if and $v.ephemeral $v.neutralize -}}
+{{- fail "neutralize is for a copy of another instance's data, not for ephemeral=true" -}}
 {{- end -}}
-{{- if and (eq $v.environment "review") (ne $v.database.type "ephemeral") -}}
-{{- fail "environment=review requires database.type=ephemeral" -}}
-{{- end -}}
-{{- if and (ne $v.environment "review") (not $v.secrets.existingSecret) -}}
-{{- fail "secrets.existingSecret is required outside review" -}}
+{{- if and (not $v.ephemeral) (not $v.secrets.existingSecret) -}}
+{{- fail "secrets.existingSecret is required unless ephemeral=true" -}}
 {{- end -}}
 {{- $p := $v.odoo.persistence -}}
 {{- if and (gt (int $v.odoo.replicas) 1) $p.enabled (eq $p.accessMode "ReadWriteOnce") -}}
 {{- fail "odoo.replicas > 1 needs a shared filestore: odoo.persistence.accessMode=ReadWriteMany, or odoo.persistence.enabled=false with the filestore on S3" -}}
 {{- end -}}
 {{- if and (include "odoo.restorePoints" .) $p.enabled (not $v.restorePoints.volumeSnapshotClass) -}}
-{{- fail "restorePoints.volumeSnapshotClass is required for the filestore snapshot outside review (or odoo.persistence.enabled=false)" -}}
+{{- fail "restorePoints.volumeSnapshotClass is required for the filestore snapshot unless ephemeral=true (or odoo.persistence.enabled=false)" -}}
 {{- end -}}
 {{- if lt (int $v.restorePoints.keep) 1 -}}
 {{- fail "restorePoints.keep must be at least 1" -}}
 {{- end -}}
-{{- if not (has $v.database.type (list "ephemeral" "external")) -}}
-{{- fail "database.type must be ephemeral or external" -}}
+{{- if and (not $v.ephemeral) (not $v.database.external.secret) -}}
+{{- fail "database.external.secret is required unless ephemeral=true" -}}
 {{- end -}}
-{{- if and (eq $v.database.type "external") (not $v.database.external.secret) -}}
-{{- fail "database.external.secret is required with database.type=external" -}}
-{{- end -}}
-{{- if and (eq $v.database.type "external") (not $v.database.external.host) -}}
-{{- fail "database.external.host (stable Service of the CNPG cluster) is required with database.type=external" -}}
+{{- if and (not $v.ephemeral) (not $v.database.external.host) -}}
+{{- fail "database.external.host (stable Service of the CNPG cluster) is required unless ephemeral=true" -}}
 {{- end -}}
 {{- if $v.route.parentRefs -}}
-{{- if and (eq $v.environment "review") (not $v.route.reviewDomain) -}}
-{{- fail "route.reviewDomain is required for a review with route.parentRefs" -}}
+{{- if and $v.ephemeral (not $v.route.reviewDomain) -}}
+{{- fail "route.reviewDomain is required with ephemeral=true and route.parentRefs" -}}
 {{- end -}}
-{{- if and (ne $v.environment "review") (not $v.route.host) -}}
+{{- if and (not $v.ephemeral) (not $v.route.host) -}}
 {{- fail "route.host is required with route.parentRefs" -}}
 {{- end -}}
 {{- end -}}
@@ -226,11 +222,11 @@ capabilities:
   drop: [ALL]
 {{- end }}
 
-{{/* Environment of Odoo and of the Jobs: secrets read natively by Odoo 20 (§6.1) */}}
+{{/* Environment of Odoo and of the Jobs: secrets read natively by Odoo 20 */}}
 {{- define "odoo.env" -}}
 - name: ODOO_RC
   value: /etc/odoo/odoo.conf
-{{- if eq .Values.database.type "ephemeral" }}
+{{- if .Values.ephemeral }}
 - name: PGHOST
   value: {{ .Release.Name }}-postgres
 - name: PGPORT
@@ -313,14 +309,14 @@ imagePullSecrets:
 {{- end }}
 {{- end }}
 
-{{/* Hooks of the chart (§3.2): annotations, given the events and the weight */}}
+{{/* Hooks of the chart: annotations, given the events and the weight */}}
 {{- define "odoo.hook" -}}
 helm.sh/hook: {{ index . 0 }}
 helm.sh/hook-weight: {{ index . 1 | quote }}
 helm.sh/hook-delete-policy: before-hook-creation
 {{- end }}
 
-{{/* Containers of the stop-snapshot and validate Jobs: sh and kubectl (§6.4) */}}
+{{/* Containers of the stop-snapshot and validate Jobs: sh and kubectl */}}
 {{- define "odoo.kubectlContainer" -}}
 image: {{ .Values.restorePoints.image }}
 command: [sh, -euc]
@@ -358,7 +354,7 @@ app.kubernetes.io/instance={{ .Release.Name }},{{ .Values.labelPrefix }}/backup-
 
 {{/* Shell function "points <state>": "<name> <phase> <filestore snapshot>" per Backup of
 the release in that state, oldest first; "complete <phase> <filestore>": the Backup is
-completed and its filestore snapshot, if any, ready to use (§3.3) */}}
+completed and its filestore snapshot, if any, ready to use */}}
 {{- define "odoo.pointFunctions" -}}
 {{- $escaped := .Values.labelPrefix | replace "." "\\." -}}
 points() {

@@ -2,8 +2,7 @@
 # (sections, lists, booleans, large integers, decimals, option removed with null, options
 # imposed by the chart).
 environment: review
-database:
-  type: ephemeral
+ephemeral: true
 mailpit:
   enabled: true
 odoo:

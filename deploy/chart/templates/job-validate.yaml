@@ -1,5 +1,5 @@
 {{- /*
-Job validate (§3.3, §6.4), recette and production, post-upgrade, once Helm has applied the
+Job validate, persistent instances, post-upgrade, once Helm has applied the
 Deployments (and waited for them with --wait):
   1. the complete pending restore point becomes validated; a failure here fails the hook;
   2. the incomplete pending points (snapshot failed or not ready) are deleted;

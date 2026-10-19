@@ -1,10 +1,10 @@
 {{- /*
-Job stop-snapshot (§3.3, §6.2), recette and production, pre-upgrade before migrate:
+Job stop-snapshot, persistent instances, pre-upgrade before migrate:
   1. stop (kubectl): refuses an orphan restore point; Odoo at 0; active CNPG cluster read
      in the selector of the stable Service; nothing to take while a complete pending
      point exists (retry after a failure);
   2. restore-point (Odoo image, psql): restore point named after the Backup in the WAL,
-     in the database postgres (GRANT, §4), before the snapshot fences the primary;
+     in the database postgres (GRANT of examples/cnpg-cluster.values.yaml), before the snapshot fences the primary;
   3. snapshot (kubectl): cold CNPG Backup labelled pending, filestore VolumeSnapshot owned
      by the Backup (no blockOwnerDeletion), both ready, then the primary ready again.
 */ -}}

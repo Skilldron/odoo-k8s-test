@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Removes the review app of a pull request: its hook resources (migrate Job, hook
 # ConfigMap: Helm does not track them), then helm uninstall pr-<n>, which deletes all of
-# its other resources, volumes included (§3.1 of docs/plans/k8s-deployment.md). Only the
-# release pr-<n> is touched. Nothing to do when it does not exist.
+# its other resources, volumes included. Only the release pr-<n> is touched. Nothing to do when it does not exist.
 # Usage: ci/review-remove.sh N
 # Env: NAMESPACE (default: namespace of the kubeconfig context), DRY_RUN=true (print only)
 set -euo pipefail
@@ -33,5 +32,5 @@ fi
 kubectl -n "$namespace" delete jobs,configmaps --wait --timeout=5m \
     -l "app.kubernetes.io/instance=$release,app.kubernetes.io/managed-by=Helm" >/dev/null
 helm uninstall "$release" -n "$namespace" --wait --timeout 5m
-echo "- review app \`$release\` supprimée" | ci_summary
+echo "- review app \`$release\` removed" | ci_summary
 echo "review-remove: $release uninstalled from $namespace"

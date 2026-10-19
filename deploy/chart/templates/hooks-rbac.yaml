@@ -1,5 +1,5 @@
 {{- /*
-Account of the stop-snapshot and validate Jobs (§6.4), recette and production only.
+Account of the stop-snapshot and validate Jobs, persistent instances only.
 Recreated at each update (hook, before-hook-creation): it only exists for the hooks, and
 has only the verbs they need. No delete on volumesnapshots: they go with their Backup. No
 access to Secrets.

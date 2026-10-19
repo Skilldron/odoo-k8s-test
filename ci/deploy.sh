@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Deploys an image with the chart (§3.2 of docs/plans/k8s-deployment.md). The chart owns
-# the update: its hooks stop Odoo, take the restore point, migrate the database, then
+# Deploys an image to an environment with the chart of deploy/chart. The chart owns the
+# update: its hooks stop Odoo, take the restore point, migrate the database, then
 # validate the point and purge the old ones. This script only:
 #   1. checks, before any downtime: server-side rendering, Secrets and their keys, the
 #      stable Service and its CNPG cluster (ready, WAL archiving, the administrator's
 #      volumeSnapshot patch), deletionPolicy Delete of the snapshot classes, no orphan
 #      restore point, cap of the review apps;
-#   2. runs helm upgrade --install: with --wait for an update of recette or production,
-#      otherwise (first installation, review) without, then kubectl rollout status, since
-#      the Odoo pods wait for the post-install migrate Job;
+#   2. runs helm upgrade --install: with --wait for an update of a persistent instance,
+#      otherwise (first installation, review app) without, then kubectl rollout status,
+#      since the Odoo pods wait for the post-install migrate Job;
 #   3. runs the smoke test through the Gateway.
 # After a failed update, Odoo stays stopped: the restore job of the workflow runs
-# ci/deploy-restore.sh (§3.3). An image that is already deployed is left as it is.
+# ci/deploy-restore.sh. An image that is already deployed is left as it is.
 # Usage: ci/deploy.sh ENV IMAGE@DIGEST
-#   ENV   review | recette | production
-# Env: PR_NUMBER (review), NAMESPACE (default: namespace of the kubeconfig context),
+#   ENV   name of the environment, values in deploy/values/<ENV>.yaml
+# Env: PR_NUMBER (review app pr-<n>, ephemeral values), NAMESPACE (default: namespace of the kubeconfig context),
 #      REVIEW_MAX_APPS (5), DEPLOY_TIMEOUT (helm --timeout, 60m), SMOKE (https, or none
 #      without Gateway), EXTRA_VALUES (tests)
 set -euo pipefail
@@ -27,10 +27,8 @@ source ci/deploy-lib.sh
 usage="usage: ci/deploy.sh ENV IMAGE@DIGEST"
 env="${1:?$usage}"
 ref="${2:?$usage}"
-case "$env" in
-review | recette | production) ;;
-*) fail "unknown environment $env" ;;
-esac
+[[ "$env" =~ ^[a-z0-9-]+$ ]] && [ -f "deploy/values/$env.yaml" ] ||
+    fail "unknown environment $env: no deploy/values/$env.yaml"
 [[ "$ref" =~ ^[^@]+@sha256:[a-f0-9]{64}$ ]] || fail "image must be IMAGE@sha256:<digest>: $ref"
 repository="${ref%@*}"
 digest="${ref#*@}"
@@ -38,17 +36,19 @@ short="${digest#sha256:}"
 short="${short:0:12}"
 namespace="${NAMESPACE:-$(namespace_of_context)}"
 [ -n "$namespace" ] || fail "no namespace: set NAMESPACE or the namespace of the kubeconfig context"
-if [ "$env" = review ]; then
-    [ -n "${PR_NUMBER:-}" ] || fail "PR_NUMBER is required for a review"
+# A review app (ephemeral=true in the values) is the release pr-<n> of a pull request
+review=""
+release=odoo
+if [ -n "${PR_NUMBER:-}" ]; then
+    [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || fail "PR_NUMBER must be a pull request number: $PR_NUMBER"
+    review=true
     release="pr-$PR_NUMBER"
-else
-    release=odoo
 fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 {
-    echo "### Déploiement $env"
+    echo "### Deployment $env"
     echo
     echo "- release \`$release\`, namespace \`$namespace\`"
     echo "- image \`$ref\`"
@@ -61,7 +61,7 @@ case "$status" in
 pending-*)
     # A run cancelled during helm upgrade: a hook may still run, or the update is lost
     [ -z "$(hook_jobs Active)" ] || fail "update in progress (hook Jobs running): try again later"
-    if [ "$env" = review ]; then
+    if [ -n "$review" ]; then
         if [ "$status" = pending-install ]; then
             helm uninstall "$release" -n "$namespace" --wait >/dev/null
             status=none
@@ -81,19 +81,21 @@ if [ "$status" = deployed ] && [ "$digest" = "$previous_digest" ]; then
     log "Image already deployed: nothing to do"
     kubectl -n "$namespace" rollout status "deploy/$release" --timeout=600s >/dev/null ||
         fail "Odoo is not running"
-    echo "**Image déjà déployée**, rien à faire." | ci_summary
+    echo "**Image already deployed**, nothing to do." | ci_summary
     echo "deploy: $release already on $short in $namespace"
     exit 0
 fi
 
 log "Preflight"
-if [ "$env" = review ] && [ "$status" = none ]; then
+if [ -n "$review" ] && [ "$status" = none ]; then
     reviews="$(helm list -n "$namespace" -q --filter '^pr-[0-9]+$')" || fail "helm list failed"
     count="$(grep -c . <<<"$reviews" || true)"
     [ "$count" -lt "${REVIEW_MAX_APPS:-5}" ] ||
         fail "cap of ${REVIEW_MAX_APPS:-5} review apps reached: close a pull request or raise REVIEW_MAX_APPS"
 fi
 render_values --history-max 10
+[ "$(jq '.ephemeral == true' "$work/values.json")" = "${review:-false}" ] ||
+    fail "deploy/values/$env.yaml: ephemeral must be true for a pull request (PR_NUMBER), false otherwise"
 for secret in $(value '.image.pullSecrets[]?'); do
     require_keys "$secret" .dockerconfigjson
 done
@@ -106,9 +108,9 @@ if [ "$(value .odoo.persistence.enabled)" = true ] && [ -z "$(value .odoo.persis
     done
 fi
 for class in $(value .database.ephemeral.storageClass); do
-    [ "$env" != review ] || cluster_object storageclasses.storage.k8s.io "$class"
+    [ -z "$review" ] || cluster_object storageclasses.storage.k8s.io "$class"
 done
-if [ "$env" != review ]; then
+if [ -z "$review" ]; then
     # Odoo's database is created by the first successful deployment
     keys=(admin-passwd)
     helm history "$release" -n "$namespace" -o json 2>/dev/null |
@@ -127,7 +129,7 @@ if [ "$env" != review ]; then
     if [ "$(value .odoo.persistence.enabled)" = true ]; then
         snapshot_class_deletes "$(value .restorePoints.volumeSnapshotClass)"
     fi
-    # Orphan restore point (§3.3): the update it protected was applied, its validation failed
+    # Orphan restore point: the update it protected was applied, its validation failed
     if [ "$status" = deployed ]; then
         orphan="$(complete_pending "$(value .labelPrefix)" | cut -d' ' -f1 | head -1)"
         [ -z "$orphan" ] ||
@@ -136,16 +138,16 @@ if [ "$env" != review ]; then
 fi
 
 timeout="${DEPLOY_TIMEOUT:-60m}"
-if [ "$env" != review ] && [ "$status" != none ]; then
+if [ -z "$review" ] && [ "$status" != none ]; then
     log "Update: helm upgrade --wait (hooks: stop, restore point, migrate, validate)"
     if ! helm_odoo --wait --timeout "$timeout" >"$work/helm.log" 2>&1; then
         cat "$work/helm.log" >&2
         failed_jobs_summary
         {
             echo
-            echo "#### Odoo est arrêté"
+            echo "#### Odoo is stopped"
             echo
-            echo "Le job \`restore\` restaure le point de restauration en attente (\`ci/deploy-restore.sh $env\`)."
+            echo "The \`restore\` job restores the pending restore point (\`ci/deploy-restore.sh $env\`)."
         } | ci_summary
         fail "update failed"
     fi
@@ -170,14 +172,14 @@ output url "$url"
 
 {
     echo
-    echo "**Déployé.** ${url:+URL : $url}"
-    if [ "$env" = review ]; then
+    echo "**Deployed.** ${url:+URL: $url}"
+    if [ -n "$review" ]; then
         echo
-        echo "Connexion : \`admin\` / \`$(kubectl -n "$namespace" get secret "$release-secrets" \
+        echo "Login: \`admin\` / \`$(kubectl -n "$namespace" get secret "$release-secrets" \
             -o go-template='{{index .data "review-admin-password" | base64decode}}')\`"
     else
         echo
-        echo "Points de restauration :"
+        echo "Restore points:"
         for state in pending validated restored; do
             points "$state" | awk -v s="$state" '{print "- `" $1 "` (" s ")"}'
         done

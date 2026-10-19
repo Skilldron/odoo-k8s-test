@@ -27,7 +27,7 @@ spec:
         {{- /*
         Waits until the database is ready for this image: click-odoo-update records the
         checksums of the modules at the end of its first pass (migrate Job). A first
-        installation or a review runs the migrate Job after Helm has applied the release
+        installation or an ephemeral instance runs the migrate Job after Helm has applied the release
         (post-install, post-upgrade), while this pod waits. After an update, the marker
         exists: no wait.
         */}}

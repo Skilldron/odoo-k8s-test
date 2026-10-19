@@ -1,0 +1,45 @@
+# Preprod: release odoo in <project>-preprod, mirror of the production: the release
+# candidates of hotfix/*, then the production image after each tag. Neutralized copy of
+# the production database; CNPG database installed apart with the CloudNativePG cluster
+# chart, restore point before each update, Mailpit.
+environment: preprod
+
+odoo:
+  # Modules of addons/ (checked by ci/chart-lint.sh)
+  modules: [dev_sample]
+  config:
+    options:
+      workers: 2
+      max_cron_threads: 1
+  persistence:
+    size: 5Gi
+
+secrets:
+  existingSecret: odoo-app
+
+database:
+  external:
+    # Stable Service odoo-db (deploy/chart/examples/database-service.yaml) and the Secret of
+    # the declared role odoo (deploy/chart/examples/database-credentials.example.sh)
+    host: odoo-db
+    port: 5432
+    secret: odoo-db-credentials
+
+restorePoints:
+  # deletionPolicy: Delete (deploy/chart/examples/longhorn-volumesnapshotclass.yaml)
+  volumeSnapshotClass: csi-snapclass
+
+mailpit:
+  enabled: true
+
+route:
+  parentRefs:
+    - {name: gateway, namespace: gateway-system}
+  host: preprod.example.com
+  mailpitHost: mail.preprod.example.com
+
+networkPolicy:
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: gateway-system

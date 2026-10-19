@@ -1,8 +1,7 @@
 # shellcheck shell=bash
-# Helpers of ci/deploy.sh and ci/deploy-restore.sh (sourced), see §3.2 and §3.3 of
-# docs/plans/k8s-deployment.md. Globals set by the caller: env (review | recette |
-# production), release, namespace, work (temporary directory), repository and digest (the
-# image, ci/deploy.sh). Env: EXTRA_VALUES, a values file added after those of the
+# Helpers of ci/deploy.sh and ci/deploy-restore.sh (sourced). Globals set by the caller:
+# env (name of the environment), release, namespace, work (temporary directory),
+# repository and digest (the image, ci/deploy.sh). Env: EXTRA_VALUES, a values file added after those of the
 # environment (tests).
 # shellcheck disable=SC2154 # those globals
 
@@ -10,7 +9,7 @@ log() { echo "--- $*"; }
 
 fail() { # fail <message>: stops the script; the message also goes to the job summary
     echo "deploy: $*" >&2
-    printf '\n**Échec** : %s\n' "$*" | ci_summary
+    printf '\n**Failed**: %s\n' "$*" | ci_summary
     exit 1
 }
 
@@ -76,7 +75,7 @@ active_cluster() { # active_cluster <service>: CNPG cluster in the selector of t
 }
 
 cnpg_ready() { # cnpg_ready <cluster>: ready, archiving its WAL, cold volume snapshots owned
-    # by their Backup (the administrator's patch, §4)
+    # by their Backup (the administrator's patch)
     local cluster="$1" json snapshot
     json="$(kubectl -n "$namespace" get clusters.postgresql.cnpg.io "$cluster" -o json)" ||
         fail "CNPG Cluster $cluster not found in $namespace"
@@ -88,7 +87,7 @@ cnpg_ready() { # cnpg_ready <cluster>: ready, archiving its WAL, cold volume sna
         {className, online, snapshotOwnerReference}' <<<"$json")"
     [ "$(jq -r '.className != null and .online == false and .snapshotOwnerReference == "backup"' \
         <<<"$snapshot")" = true ] ||
-        fail "CNPG Cluster $cluster: spec.backup.volumeSnapshot is $snapshot, no restore point possible. Apply the patch of deploy/examples/cnpg-cluster.values.yaml: kubectl -n $namespace patch cluster $cluster --type merge -p '{\"spec\":{\"backup\":{\"volumeSnapshot\":{\"className\":\"<VolumeSnapshotClass>\",\"online\":false,\"snapshotOwnerReference\":\"backup\"}}}}'"
+        fail "CNPG Cluster $cluster: spec.backup.volumeSnapshot is $snapshot, no restore point possible. Apply the patch of deploy/chart/examples/cnpg-cluster.values.yaml: kubectl -n $namespace patch cluster $cluster --type merge -p '{\"spec\":{\"backup\":{\"volumeSnapshot\":{\"className\":\"<VolumeSnapshotClass>\",\"online\":false,\"snapshotOwnerReference\":\"backup\"}}}}'"
 }
 
 snapshot_class_deletes() { # snapshot_class_deletes <class>: deletionPolicy Delete, or the
@@ -117,7 +116,7 @@ points() { # points <states> [prefix]: "<name> <phase> <filestore snapshot> <tar
 }
 
 complete_point() { # complete_point <phase> <filestore snapshot>: Backup completed and its
-    # filestore snapshot, if any, ready to use (§3.3)
+    # filestore snapshot, if any, ready to use
     [ "$1" = completed ] || return 1
     [ "$2" = - ] && return 0
     [ "$(kubectl -n "$namespace" get volumesnapshots.snapshot.storage.k8s.io "$2" \
@@ -158,7 +157,7 @@ failed_jobs_summary() { # logs of the failed hook Jobs of the release, in the jo
             --tail=100 >"$work/$job.log" 2>&1 || true
         {
             echo
-            echo "<details><summary>Logs du Job $job</summary>"
+            echo "<details><summary>Logs of the Job $job</summary>"
             echo
             echo '```'
             tail -40 "$work/$job.log"
@@ -173,7 +172,7 @@ failed_jobs_summary() { # logs of the failed hook Jobs of the release, in the jo
 odoo_url() { # public URL of Odoo, empty without HTTPRoute
     jq -r --arg release "$release" '
         if (.route.parentRefs // [] | length) == 0 then empty
-        elif .environment == "review" then "https://\(.project)-\($release).\(.route.reviewDomain)"
+        elif .ephemeral then "https://\(.project)-\($release).\(.route.reviewDomain)"
         else "https://\(.route.host)" end' "$work/values.json"
 }
 
