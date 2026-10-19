@@ -98,6 +98,40 @@ froid pour le rollback des upgrades Odoo » et sa revue :
 - **plus de bloc `state`** : sans restauration automatique du filestore, rien n'est
   reporté entre deux déploiements ; la CI ne passe que le digest (§3.3).
 
+Décisions du 2026-10-19 (environnements, documentation) :
+
+- **Quatre environnements**, noms anglais : `review`, `staging` (ex-« recette »),
+  `preprod`, `production`.
+
+  | Environnement | Rôle                                           | Image                                | Base                              | Remise à zéro                               |
+  | ------------- | ---------------------------------------------- | ------------------------------------ | --------------------------------- | ------------------------------------------- |
+  | `review`      | essayer une PR                                 | image de la PR                       | vide + démo                       | à chaque image, jetable                     |
+  | `staging`     | recette métier, tests de configuration (jours) | dernière rc de `release/*`           | copie de la prod neutralisée      | **à la demande** (runbook)                  |
+  | `preprod`     | miroir de la prod, test des sauvegardes        | digest de la prod ; rc de `hotfix/*` | sauvegarde de la prod neutralisée | chaque nuit (**documenté, non implémenté**) |
+  | `production`  | —                                              | `vX.Y.Z` (rc promue)                 | réelle                            | jamais                                      |
+
+- **Hotfix en préprod** : un hotfix part de `main` et va directement en prod ; sa rc se
+  teste sur la copie de la prod, la recette de la release en cours n'est pas touchée.
+- **Rafraîchissement du staging** depuis la prod : manuel, documenté (runbook), pour ne
+  pas effacer des tests de configuration menés sur plusieurs jours.
+- **Préprod nocturne** (restauration de la dernière sauvegarde de la prod,
+  neutralisation, digest de la prod, smoke test, alerte) : **à documenter seulement**,
+  pas de logique implémentée.
+- **Filestore de la préprod** : lecture de la prod seule, écriture dans son propre
+  bucket (à documenter ; Odoo ne lit pas nativement un second bucket : copie du bucket
+  ou module de stockage à préciser). Filestore sur PVC, ou préprod/staging dans un autre
+  namespace ou cluster : restaurer depuis le stockage distant des sauvegardes (Longhorn
+  backup, Velero…), documenté, non implémenté.
+- **Documentation en anglais**, pour un public : claire, concise, sans référence au
+  plan, aux phases ni aux §. Les commentaires du code et des scripts sont nettoyés de
+  ces références en phase 5. Le chart partira dans son propre dépôt avec sa
+  documentation (`deploy/chart/README.md`, `deploy/chart/docs/`,
+  `deploy/chart/examples/`) ; le modèle garde la sienne (objectif, fonctionnalités, Git
+  Flow, CI, déploiement côté projet). Les plans Claude seront purgés du dépôt avant
+  publication.
+- **Phase 5 élargie** : renommage `recette` → `staging`, environnement `preprod`
+  (valeurs, job de `ci.yml` pour les rc de `hotfix/*`), puis exemples et documentation.
+
 ## 1. Outillage retenu
 
 | Option                                        | Verdict                                                                                                                                                                                                               |
