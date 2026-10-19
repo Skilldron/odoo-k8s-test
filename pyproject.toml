@@ -1,4 +1,4 @@
-# Configuration des outils Python (ruff). Pas un package installable.
+# Python tooling configuration (ruff). Not an installable package.
 [tool.ruff]
 target-version = "py312"
 line-length = 88

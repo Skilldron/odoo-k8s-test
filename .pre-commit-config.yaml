@@ -1,4 +1,4 @@
-# Contrôles qualité — exécutés au commit (local) et en CI (même configuration).
+# Quality checks, run on commit (locally) and in CI (same configuration).
 # Lancer manuellement : pre-commit run --all-files
 exclude: |
   (?x)
@@ -22,8 +22,8 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
       - id: check-case-conflict
-      # check-executables-have-shebangs volontairement absent : sur Docker Desktop
-      # (macOS), le montage « fakeowner » rend tous les fichiers exécutables.
+      # check-executables-have-shebangs left out on purpose: on Docker Desktop (macOS),
+      # the "fakeowner" mount makes every file executable.
       - id: check-symlinks
       - id: check-xml
       - id: check-yaml

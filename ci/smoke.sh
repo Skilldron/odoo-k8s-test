@@ -46,11 +46,11 @@ uid="$(docker exec "$app" id -u)"
 
 echo "/web/health: $health, /web/login: $login, uid: $uid"
 {
-    echo "### Smoke test (image prod durcie)"
+    echo "### Smoke test (hardened production image)"
     echo
-    echo "- \`/web/health\` : $health"
-    echo "- \`/web/login\` : $login"
-    echo "- uid du processus : $uid"
+    echo "- \`/web/health\`: $health"
+    echo "- \`/web/login\`: $login"
+    echo "- process uid: $uid"
 } | ci_summary
 
 if [ "$health" != 200 ] || [ "$login" != 200 ] || [ "$uid" = 0 ]; then

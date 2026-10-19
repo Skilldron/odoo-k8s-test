@@ -44,13 +44,13 @@ echo
 echo "Coverage:"
 cat "$coverage_md"
 {
-    echo "### Tests Odoo"
+    echo "### Odoo tests"
     echo
-    echo "- Modules : \`$modules\`"
-    echo "- Résultat : ${result:-aucun résultat de test}"
-    echo "- Lignes ERROR/CRITICAL : $errors"
+    echo "- Modules: \`$modules\`"
+    echo "- Result: ${result:-no test result}"
+    echo "- ERROR/CRITICAL lines: $errors"
     echo
-    echo "#### Couverture"
+    echo "#### Coverage"
     echo
     cat "$coverage_md"
 } | ci_summary

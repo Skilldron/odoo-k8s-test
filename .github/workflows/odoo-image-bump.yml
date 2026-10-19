@@ -49,4 +49,4 @@ jobs:
           git commit -am "Odoo image: $tag"
           git push origin "$branch"
           gh pr create --base "$BASE" --head "$branch" --title "Odoo image: $tag" \
-              --body "Nouvelle image officielle \`$IMAGE\` (ci/odoo-image-latest.sh). Vérifier la CI avant de fusionner."
+              --body "New official image \`$IMAGE\` (ci/odoo-image-latest.sh). Check the CI before merging."

@@ -1,269 +1,257 @@
-# CI et image de prod
+# CI and production image
 
-La CI (GitHub Actions, runners hébergés par GitHub) vérifie le code, construit l'**image
-de prod**, la teste et la publie sur GHCR. Elle s'arrête là : le **déploiement est à
-faire soi-même** dans cette branche. Les moyens de déploiement (Docker, Kubernetes)
-vivent dans des branches alternatives du dépôt modèle (`20.0-docker-deployment`,
-`20.0-k8s-deployment`).
-
-Plans : [plans/ci-github-actions.md](plans/ci-github-actions.md) (v1),
-[plans/ci-v2-image-base.md](plans/ci-v2-image-base.md) (v2, en place). Modèle de
-branches : [gitflow.md](gitflow.md).
+The CI (GitHub Actions, GitHub-hosted runners) checks the code, builds the **production
+image**, tests it and publishes it to GHCR. It stops there: **deployment is up to you**
+in this branch. Deployment tooling (Docker, Kubernetes) lives in other branches of the
+template repository (`20.0-docker-deployment`, `20.0-k8s-deployment`). Branching model:
+[gitflow.md](gitflow.md).
 
 ## Pipeline
 
-Trois groupes de jobs (workflows réutilisables appelés par `.github/workflows/ci.yml`) :
+Three groups of jobs (reusable workflows called by `.github/workflows/ci.yml`):
 
 ```
-Qualité    quality.yml   lint (pre-commit)
+Quality    quality.yml   lint (pre-commit)
 Image      image.yml     plan ─► base ─► build ─┬─► tests ─┐
                                                 └─► smoke ─┴─► publish
-                         (PR de fork : un seul job « local », sans publication)
-Promotion  promote.yml   tag vX.Y.Z : dernière X.Y.Z-rc.N ─► X.Y.Z
+                         (pull request from a fork: a single "local" job, nothing published)
+Promotion  promote.yml   tag vX.Y.Z: last X.Y.Z-rc.N ─► X.Y.Z
 ```
 
-| Job       | Rôle                                                                                                 |
-| --------- | ---------------------------------------------------------------------------------------------------- |
-| `plan`    | Tags à publier selon l'événement ; refuse une `release/` ou `hotfix/` qui n'est pas `X.Y.Z`          |
-| `base`    | Publie `base:<clé>` si elle n'existe pas encore (environ une fois par semaine)                       |
-| `build`   | Construit uniquement les modules sur `base:<clé>`, pousse `builds:run-<id>` (+ `-test`)              |
-| `tests`   | Tests des modules de `addons/` + couverture, sur l'image tirée du registre                           |
-| `smoke`   | Image prod en lecture seule, sans capacités : `/web/health`, `/web/login`, uid non root              |
-| `publish` | Après tests **et** smoke test : pose les tags lisibles (même digest, sans rebuild) ; sortie `digest` |
-| `promote` | Sur un tag git : promotion de la dernière release candidate ; sortie `digest`                        |
+| Job       | Role                                                                                          |
+| --------- | --------------------------------------------------------------------------------------------- |
+| `plan`    | Tags to publish for the event; refuses a `release/` or `hotfix/` branch that is not `X.Y.Z`   |
+| `base`    | Publishes `base:<key>` when it does not exist yet (about once a week)                         |
+| `build`   | Builds only the modules on top of `base:<key>`, pushes `builds:run-<id>` (+ `-test`)          |
+| `tests`   | Tests of the `addons/` modules + coverage, on the image pulled from the registry              |
+| `smoke`   | Production image, read-only, no capabilities: `/web/health`, `/web/login`, non-root uid       |
+| `publish` | After the tests **and** the smoke test: adds the readable tags (same digest); output `digest` |
+| `promote` | On a git tag: promotes the last release candidate; output `digest`                            |
 
-Autres workflows :
+Other workflows:
 
-| Workflow                                | Déclencheur                        | Rôle                                      |
-| --------------------------------------- | ---------------------------------- | ----------------------------------------- |
-| `.github/workflows/cleanup.yml`         | fermeture de PR, quotidien, manuel | Nettoyage des paquets `builds` et `base`  |
-| `.github/workflows/odoo-image-bump.yml` | lundi 5 h, manuel                  | PR quand l'image officielle `odoo` change |
-| `.github/dependabot.yml`                | hebdomadaire                       | PR de mise à jour (actions, pip, npm)     |
+| Workflow                                | Trigger                            | Role                                         |
+| --------------------------------------- | ---------------------------------- | -------------------------------------------- |
+| `.github/workflows/cleanup.yml`         | pull request closed, daily, manual | Cleans up the `builds` and `base` packages   |
+| `.github/workflows/odoo-image-bump.yml` | Monday 5:00, manual                | Pull request when the official image changes |
+| `.github/dependabot.yml`                | weekly                             | Update pull requests (actions, pip, npm)     |
 
-## Image de base : seuls les modules sont reconstruits
+## Base image: only the modules are rebuilt
 
-`base:<clé>` contient l'image officielle `odoo:20.0` figée, le venv et les modules OCA
-de `requirements.txt`. Sa clé (`ci/base-key.sh`) est une empreinte de
-`docker/Dockerfile` et de `requirements.txt` : elle ne change qu'avec une nouvelle image
-Odoo, un module OCA ou une modification du Dockerfile.
+`base:<key>` holds the pinned official `odoo:20.0` image, the venv and the OCA modules
+of `requirements.txt`. Its key (`ci/base-key.sh`) is a hash of `docker/Dockerfile` and
+`requirements.txt`: it changes only with a new Odoo image, an OCA module or a change to
+the Dockerfile.
 
-Le job `build` remplace l'étape `base` du Dockerfile par cette image
-(`--build-context base=docker-image://…/base:<clé>`) : il n'exécute que les étapes
-`prod` (copie des modules) et `test`, et ne pousse que ces couches, quelques Mo.
+The `build` job replaces the `base` stage of the Dockerfile with this image
+(`--build-context base=docker-image://…/base:<key>`): it runs only the `prod` (copy of
+the modules) and `test` stages, and pushes only those layers, a few MB.
 
-Ce que ça n'évite pas : pour lancer les tests et le smoke test, le runner doit avoir
-l'image **complète**. Les runners hébergés par GitHub étant éphémères, les jobs `tests`
-et `smoke` la tirent de GHCR à chaque run (réseau GitHub, sans limite Docker Hub). Seul
-un runner auto-hébergé, avec un cache Docker persistant, éviterait ce téléchargement.
+What it does not avoid: to run the tests and the smoke test, the runner needs the
+**whole** image. GitHub-hosted runners are ephemeral, so the `tests` and `smoke` jobs
+pull it from GHCR on every run (GitHub network, no Docker Hub limit). Only a self-hosted
+runner with a persistent Docker cache would avoid this download.
 
-## Paquets GHCR et tags
+## GHCR packages and tags
 
-| Paquet                         | Tags                                                                         | Durée de vie         |
-| ------------------------------ | ---------------------------------------------------------------------------- | -------------------- |
-| `ghcr.io/<org>/<dépôt>/base`   | `<clé>`                                                                      | 5 dernières versions |
-| `ghcr.io/<org>/<dépôt>/builds` | `run-<id>-<essai>` (transit), `pr-<n>`, `develop`, `main`, `20.0`, `sha-<7>` | jetable (nettoyage)  |
-| `ghcr.io/<org>/<dépôt>`        | `X.Y.Z-rc.N`, `X.Y.Z`                                                        | conservé             |
+| Package                       | Tags                                                                           | Lifetime             |
+| ----------------------------- | ------------------------------------------------------------------------------ | -------------------- |
+| `ghcr.io/<org>/<repo>/base`   | `<key>`                                                                        | last 5 versions      |
+| `ghcr.io/<org>/<repo>/builds` | `run-<id>-<attempt>` (transit), `pr-<n>`, `develop`, `main`, `20.0`, `sha-<7>` | disposable (cleanup) |
+| `ghcr.io/<org>/<repo>`        | `X.Y.Z-rc.N`, `X.Y.Z`                                                          | kept                 |
 
-| Événement            | Tags publiés                          | Environnement visé |
-| -------------------- | ------------------------------------- | ------------------ |
-| pull request         | `builds:pr-<n>`                       | review (preview)   |
-| push `develop`       | `builds:develop`, `builds:sha-<7>`    | testing            |
-| push `main`, `20.0`  | `builds:<branche>`, `builds:sha-<7>`  | —                  |
-| push `release/X.Y.Z` | `X.Y.Z-rc.<n° de run>`                | recette            |
-| push `hotfix/X.Y.Z`  | `X.Y.Z-rc.<n° de run>`                | recette            |
-| tag `vX.Y.Z`         | `X.Y.Z` (promotion de la dernière rc) | prod               |
+| Event                | Published tags                      | Intended environment |
+| -------------------- | ----------------------------------- | -------------------- |
+| pull request         | `builds:pr-<n>`                     | review               |
+| push `develop`       | `builds:develop`, `builds:sha-<7>`  | —                    |
+| push `main`, `20.0`  | `builds:<branch>`, `builds:sha-<7>` | —                    |
+| push `release/X.Y.Z` | `X.Y.Z-rc.<run number>`             | staging              |
+| push `hotfix/X.Y.Z`  | `X.Y.Z-rc.<run number>`             | preprod              |
+| tag `vX.Y.Z`         | `X.Y.Z` (promotion of the last rc)  | production           |
 
-Le `N` de `-rc.N` est le numéro de run de la CI : il croît toujours, sans être continu.
-Pour déployer, utiliser de préférence le **digest** (`image@sha256:…`, affiché dans le
-résumé du job) plutôt qu'un tag mobile.
+The `N` of `-rc.N` is the CI run number: it always grows, with gaps. To deploy, prefer
+the **digest** (`image@sha256:…`, shown in the job summary) to a moving tag.
 
-## Une seule promotion : recette → prod
+## A single promotion: release candidate → production
 
-Avant la recette, chaque événement reconstruit son image (ce qui ne coûte presque rien)
-: on a encore le temps de corriger. La seule garantie forte est à la fin : **la prod
-reçoit exactement l'image validée en recette**.
+Before the release candidate, every event rebuilds its image, which costs almost
+nothing: there is still time to fix things. The one strong guarantee comes at the end:
+**production receives exactly the image that was validated**.
 
-Sur un tag `vX.Y.Z`, `ci/image-promote.sh` :
+On a `vX.Y.Z` tag, `ci/image-promote.sh`:
 
-1. retient la release candidate `X.Y.Z-rc.N` de plus grand N (`rc.63` avant `rc.9`) ;
-   échec s'il n'y en a aucune ;
-2. **contrôle** que la rc a été construite à partir du code tagué : son label
-   `odoo.template.tree` (empreinte du contenu du code, posée au build) doit être égal à
-   celle du commit tagué. Sinon refus, par exemple si `main` a reçu un hotfix après la
-   dernière rc : fusionner ce qui manque dans la release, valider la nouvelle rc, puis
-   re-taguer ;
-3. ajoute le tag `X.Y.Z` au digest de la rc : **même digest**, sans rebuild.
+1. picks the release candidate `X.Y.Z-rc.N` with the highest N (`rc.63` before `rc.9`);
+   fails if there is none;
+2. **checks** that the rc was built from the tagged code: its label `odoo.template.tree`
+   (hash of the code content, set at build time) must equal that of the tagged commit.
+   Otherwise it refuses, for instance when `main` received a hotfix after the last rc:
+   merge what is missing into the release, validate the new rc, then tag again;
+3. adds the `X.Y.Z` tag to the digest of the rc: **same digest**, no rebuild.
 
-Toutes les copies de tags (`builds` → release, rc → prod) gardent le digest d'origine
+Every tag copy (`builds` → release, rc → version) keeps the original digest
 (`imagetools create --prefer-index=false`).
 
-## Nettoyage (`cleanup.yml`)
+## Cleanup (`cleanup.yml`)
 
-- Fermeture d'une PR : la version taguée `builds:pr-<n>` est supprimée.
-- Chaque nuit : dans `builds`, suppression des versions non taguées et de tout ce qui
-  dépasse les 30 plus récentes, sauf `develop`, `main`, `20.0` et les previews `pr-<n>`
-  (supprimées à la fermeture de leur PR) ; dans `base`, on garde les 5 dernières.
-- Le paquet de release n'est **jamais** nettoyé automatiquement.
+- When a pull request closes, the version tagged `builds:pr-<n>` is deleted.
+- Every night: in `builds`, untagged versions and everything beyond the 30 most recent
+  are deleted, except `develop`, `main`, `20.0` and the `pr-<n>` previews (deleted when
+  their pull request closes); in `base`, the last 5 are kept.
+- The release package is **never** cleaned up automatically.
 
-Les images sont publiées sans attestations (`--provenance=false`) : chaque image est un
-manifeste unique, et une version non taguée est toujours une image remplacée, donc
-supprimable sans risque.
+Images are published without attestations (`--provenance=false`): each image is a single
+manifest, and an untagged version is always a replaced image, safe to delete.
 
-**Pré-requis GitHub** (une fois, après le premier push qui crée les paquets) : dans les
-paramètres de chaque paquet (`<dépôt>`, `<dépôt>/builds`, `<dépôt>/base`), donner au
-dépôt l'accès Actions avec le rôle **Admin**, nécessaire pour supprimer des versions
-avec `GITHUB_TOKEN`. Les paquets privés consomment le quota de stockage GitHub Packages
-: le nettoyage de `builds` le maintient bas.
+**GitHub prerequisite** (once, after the first push creates the packages): in the
+settings of each package (`<repo>`, `<repo>/builds`, `<repo>/base`), give the repository
+Actions access with the **Admin** role, needed to delete versions with `GITHUB_TOKEN`.
+Private packages use the GitHub Packages storage quota: the cleanup of `builds` keeps it
+low.
 
-## Scripts `ci/`
+## `ci/` scripts
 
-Chaque job n'est qu'une fine couche au-dessus de ces scripts, qui tournent à l'identique
-en local :
+Each job is a thin layer over these scripts, which run the same way locally:
 
-| Script                          | Rôle                                                                               |
-| ------------------------------- | ---------------------------------------------------------------------------------- |
-| `ci/base-key.sh`                | Clé de l'image de base                                                             |
-| `ci/base-ensure.sh`             | Publie `base:<clé>` si absente                                                     |
-| `ci/image-build.sh`             | Images `prod` et `test` sur la base (`PUSH=true`) ; `BASE=local` : tout construire |
-| `ci/run-tests.sh <image>`       | Tests + couverture ; échoue sur un test KO ou une ligne ERROR/CRITICAL             |
-| `ci/smoke.sh <image>`           | Smoke test durci                                                                   |
-| `ci/image-tag.sh SRC DEST…`     | Ajoute des tags (même digest), éventuellement dans un autre paquet                 |
-| `ci/image-promote.sh X.Y.Z`     | Dernière rc → `X.Y.Z`, avec contrôle du contenu                                    |
-| `ci/registry-tags.py IMAGE`     | Liste les tags d'un dépôt d'images (API OCI)                                       |
-| `ci/ghcr-prune.sh PAQUET RÈGLE` | Nettoyage d'un paquet GHCR (`tag:<tag>` ou `keep:<n>[:<regex>]`)                   |
-| `ci/odoo-image-latest.sh`       | Nouveau digest de l'image officielle Odoo, s'il y en a un                          |
+| Script                          | Role                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------ |
+| `ci/base-key.sh`                | Key of the base image                                                          |
+| `ci/base-ensure.sh`             | Publishes `base:<key>` when missing                                            |
+| `ci/image-build.sh`             | `prod` and `test` images on the base (`PUSH=true`); `BASE=local`: build it all |
+| `ci/run-tests.sh <image>`       | Tests + coverage; fails on a failing test or an ERROR/CRITICAL line            |
+| `ci/smoke.sh <image>`           | Hardened smoke test                                                            |
+| `ci/image-tag.sh SRC DEST…`     | Adds tags (same digest), possibly in another package                           |
+| `ci/image-promote.sh X.Y.Z`     | Last rc → `X.Y.Z`, with the content check                                      |
+| `ci/registry-tags.py IMAGE`     | Lists the tags of an image repository (OCI API)                                |
+| `ci/ghcr-prune.sh PACKAGE RULE` | Cleans up a GHCR package (`tag:<tag>` or `keep:<n>[:<regex>]`)                 |
+| `ci/odoo-image-latest.sh`       | New digest of the official Odoo image, if any                                  |
 
 ```sh
-# En local, avec un registre jetable :
+# Locally, with a throwaway registry:
 docker run -d --name registry -p 5050:5000 registry:2
-export IMAGE=localhost:5050/mon-projet
+export IMAGE=localhost:5050/my-project
 ci/base-ensure.sh
 PUSH=true TAG=local-1 ci/image-build.sh
 ci/run-tests.sh "$IMAGE/builds:local-1-test"
 ci/smoke.sh "$IMAGE/builds:local-1"
 ci/image-tag.sh "$IMAGE/builds:local-1" "$IMAGE:1.0.0-rc.1"
-ci/image-promote.sh 1.0.0          # depuis le commit construit
+ci/image-promote.sh 1.0.0          # from the commit that was built
 ```
 
-## Étapes de l'image (`docker/Dockerfile`)
+## Image stages (`docker/Dockerfile`)
 
-| Étape     | Contenu                                                                                        |
-| --------- | ---------------------------------------------------------------------------------------------- |
-| `runtime` | Image officielle `odoo:20.0` figée par digest, utilisateur `odoo` (uid 1000), venv `/opt/venv` |
-| `builder` | `git` et outils de compilation pour installer `requirements.txt` (modules OCA)                 |
-| `base`    | `runtime` + venv construit, sans `git` — publiée en CI comme `base:<clé>`                      |
-| `dev`     | Outillage du dev container                                                                     |
-| `prod`    | `base` + `addons/`, `vendor/`, configuration par variables, `HEALTHCHECK` ; l'image déployée   |
-| `test`    | `prod` + `coverage`, uniquement pour la CI                                                     |
+| Stage     | Content                                                                                      |
+| --------- | -------------------------------------------------------------------------------------------- |
+| `runtime` | Official `odoo:20.0` image pinned by digest, user `odoo` (uid 1000), venv `/opt/venv`        |
+| `builder` | `git` and build tools to install `requirements.txt` (OCA modules)                            |
+| `base`    | `runtime` + the built venv, without `git`; published by the CI as `base:<key>`               |
+| `dev`     | Tooling of the dev container                                                                 |
+| `prod`    | `base` + `addons/`, `vendor/`, configuration by variables, `HEALTHCHECK`; the deployed image |
+| `test`    | `prod` + `coverage`, for the CI only                                                         |
 
-L'image `prod` suit `docker-patterns` : base figée par digest, utilisateur non root,
-aucun secret dans les couches, compatible `--read-only` (configuration statique, rien
-n'est écrit au démarrage), `HEALTHCHECK` sur `/web/health`. Labels :
-`org.opencontainers.image.version`, `org.opencontainers.image.revision`,
-`odoo.template.tree`, `odoo.version`.
+The `prod` image has a base pinned by digest, a non-root user, no secret in its layers,
+works with `--read-only` (static configuration, nothing written at startup), and a
+`HEALTHCHECK` on `/web/health`. Labels: `org.opencontainers.image.version`,
+`org.opencontainers.image.revision`, `odoo.template.tree`, `odoo.version`.
 
-## Configuration par environnement
+## Configuration per environment
 
-La même image sert tous les environnements ; seule la configuration change. L'image
-contient une configuration statique sans secret, `docker/odoo.conf` (`ODOO_RC`), qui ne
-fixe que ce qui diffère des défauts d'Odoo. Le reste vient de l'environnement, lu par
-Odoo 20 lui-même avant le fichier :
+The same image serves every environment; only the configuration changes. The image holds
+a static configuration without secrets, `docker/odoo.conf` (`ODOO_RC`), which only sets
+what differs from Odoo's defaults. The rest comes from the environment, read by Odoo 20
+itself before the file:
 
-- chaque option du fichier a sa variable `ODOO_<OPTION>` (en majuscules), par exemple
-  `ODOO_WORKERS` pour `workers` ;
-- la base vient des variables `PG*`.
+- each option of the file has its `ODOO_<OPTION>` variable (upper case), for instance
+  `ODOO_WORKERS` for `workers`;
+- the database comes from the `PG*` variables.
 
-Rien n'est rendu au démarrage. `docker/entrypoint.sh` vérifie seulement les variables
-requises, arrête le conteneur avec un message explicite s'il en manque une, puis passe
-la main à l'entrypoint officiel (attente de PostgreSQL).
+Nothing is rendered at startup. `docker/entrypoint.sh` only checks the required
+variables, stops the container with an explicit message when one is missing, then hands
+over to the official entrypoint (which waits for PostgreSQL).
 
-Variables courantes :
+Common variables:
 
-| Variable                 | Requise | Défaut       | Option Odoo              |
-| ------------------------ | ------- | ------------ | ------------------------ |
-| `PGHOST`                 | oui     | —            | `db_host`                |
-| `PGPORT`                 | non     | `5432`       | `db_port`                |
-| `PGUSER`                 | oui     | —            | `db_user`                |
-| `PGPASSWORD`             | oui     | —            | `db_password` (secret)   |
-| `PGDATABASE`             | oui     | —            | `db_name` (seule base)   |
-| `ODOO_ADMIN_PASSWD`      | oui     | —            | `admin_passwd` (secret)  |
-| `ODOO_WORKERS`           | non     | `2`          | `workers`                |
-| `ODOO_MAX_CRON_THREADS`  | non     | `1`          | `max_cron_threads`       |
-| `ODOO_LIST_DB`           | non     | `False`      | `list_db`                |
-| `ODOO_PROXY_MODE`        | non     | `True`       | `proxy_mode`             |
-| `ODOO_LIMIT_MEMORY_SOFT` | non     | `2147483648` | `limit_memory_soft`      |
-| `ODOO_LIMIT_MEMORY_HARD` | non     | `2684354560` | `limit_memory_hard`      |
-| `ODOO_LIMIT_TIME_CPU`    | non     | `600`        | `limit_time_cpu`         |
-| `ODOO_LIMIT_TIME_REAL`   | non     | `1200`       | `limit_time_real`        |
-| `ODOO_SMTP_SERVER`       | non     | `localhost`  | `smtp_server`            |
-| `ODOO_SMTP_PORT`         | non     | `25`         | `smtp_port`              |
-| `ODOO_SMTP_SSL`          | non     | `False`      | `smtp_ssl`               |
-| `ODOO_SMTP_USER`         | non     | vide         | `smtp_user`              |
-| `ODOO_SMTP_PASSWORD`     | non     | vide         | `smtp_password` (secret) |
-| `ODOO_EMAIL_FROM`        | non     | vide         | `email_from`             |
-| `ODOO_LOG_LEVEL`         | non     | `info`       | `log_level`              |
+| Variable                 | Required | Default      | Odoo option               |
+| ------------------------ | -------- | ------------ | ------------------------- |
+| `PGHOST`                 | yes      | —            | `db_host`                 |
+| `PGPORT`                 | no       | `5432`       | `db_port`                 |
+| `PGUSER`                 | yes      | —            | `db_user`                 |
+| `PGPASSWORD`             | yes      | —            | `db_password` (secret)    |
+| `PGDATABASE`             | yes      | —            | `db_name` (only database) |
+| `ODOO_ADMIN_PASSWD`      | yes      | —            | `admin_passwd` (secret)   |
+| `ODOO_WORKERS`           | no       | `2`          | `workers`                 |
+| `ODOO_MAX_CRON_THREADS`  | no       | `1`          | `max_cron_threads`        |
+| `ODOO_LIST_DB`           | no       | `False`      | `list_db`                 |
+| `ODOO_PROXY_MODE`        | no       | `True`       | `proxy_mode`              |
+| `ODOO_LIMIT_MEMORY_SOFT` | no       | `2147483648` | `limit_memory_soft`       |
+| `ODOO_LIMIT_MEMORY_HARD` | no       | `2684354560` | `limit_memory_hard`       |
+| `ODOO_LIMIT_TIME_CPU`    | no       | `600`        | `limit_time_cpu`          |
+| `ODOO_LIMIT_TIME_REAL`   | no       | `1200`       | `limit_time_real`         |
+| `ODOO_SMTP_SERVER`       | no       | `localhost`  | `smtp_server`             |
+| `ODOO_SMTP_PORT`         | no       | `25`         | `smtp_port`               |
+| `ODOO_SMTP_SSL`          | no       | `False`      | `smtp_ssl`                |
+| `ODOO_SMTP_USER`         | no       | empty        | `smtp_user`               |
+| `ODOO_SMTP_PASSWORD`     | no       | empty        | `smtp_password` (secret)  |
+| `ODOO_EMAIL_FROM`        | no       | empty        | `email_from`              |
+| `ODOO_LOG_LEVEL`         | no       | `info`       | `log_level`               |
 
-Sans `dbfilter`, Odoo ne sert que la base `db_name`. Les défauts viennent de
-`docker/odoo.conf`, ou d'Odoo lui-même pour le SMTP et `log_level`.
+Without `dbfilter`, Odoo serves only the `db_name` database. Defaults come from
+`docker/odoo.conf`, or from Odoo itself for SMTP and `log_level`.
 
-**Autre fichier de configuration** : monter son propre fichier et pointer `ODOO_RC`
-dessus (`-e ODOO_RC=/etc/odoo/odoo.conf -v ./odoo.conf:/etc/odoo/odoo.conf:ro`), par
-exemple pour les sections de modules (`[queue_job]`). Les secrets restent dans
-l'environnement : le fichier n'en contient aucun, et les variables requises le restent.
+**Another configuration file**: mount your own file and point `ODOO_RC` at it
+(`-e ODOO_RC=/etc/odoo/odoo.conf -v ./odoo.conf:/etc/odoo/odoo.conf:ro`), for instance
+for module sections (`[queue_job]`). Secrets stay in the environment: the file holds
+none, and the required variables are still required.
 
-## Déployer soi-même
+## Deploying it yourself
 
-Exemple minimal avec Docker (à adapter : réseau, reverse proxy, sauvegardes, secrets) :
+A minimal example with Docker (adapt the network, reverse proxy, backups and secrets):
 
 ```sh
-IMAGE=ghcr.io/<org>/<dépôt>@sha256:<digest>
-ENV=(-e PGHOST=db.interne -e PGUSER=odoo -e PGPASSWORD=… -e PGDATABASE=prod
+IMAGE=ghcr.io/<org>/<repo>@sha256:<digest>
+ENV=(-e PGHOST=db.internal -e PGUSER=odoo -e PGPASSWORD=… -e PGDATABASE=prod
      -e ODOO_ADMIN_PASSWD=… -e ODOO_WORKERS=4)
 
-# 1. Modules, Odoo arrêté
+# 1. Modules, with Odoo stopped
 RUN=(docker run --rm "${ENV[@]}" -v odoo-data:/var/lib/odoo "$IMAGE")
-#    première installation : modules du projet, puis référence des empreintes
+#    first installation: the project modules, then the reference hashes
 "${RUN[@]}" odoo -i <modules> --stop-after-init --no-http
 "${RUN[@]}" click-odoo-update --only-compute-hashes
-#    nouvelle version : seuls les modules modifiés sont mis à jour
+#    new version: only the changed modules are updated
 "${RUN[@]}" click-odoo-update
-# 2. Démarrage, durci
+# 2. Start, hardened
 docker run -d --name odoo "${ENV[@]}" -v odoo-data:/var/lib/odoo -p 8069:8069 -p 8072:8072 \
     --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
     --restart unless-stopped "$IMAGE"
 ```
 
-Mise à jour des modules : `click-odoo-update` (paquet `click-odoo-contrib`, dans
-l'image) compare l'empreinte de chaque module à celle stockée en base et ne met à jour
-que les modules modifiés, y compris les modules Odoo et OCA après une nouvelle image de
-base (`--update-all` force une mise à jour complète). Arrêter Odoo pendant la mise à
-jour et sauvegarder juste avant : Odoo enregistre chaque module mis à jour au fur et à
-mesure, une mise à jour en échec laisse la base à moitié migrée.
+Module updates: `click-odoo-update` (package `click-odoo-contrib`, in the image)
+compares the hash of each module with the one stored in the database and updates only
+the changed modules, including Odoo and OCA modules after a new base image
+(`--update-all` forces a full update). Stop Odoo during the update and back up right
+before it: Odoo records each module as it is updated, so a failed update leaves the
+database half-migrated.
 
-Points à prévoir : `/var/lib/odoo` (filestore) sur un volume persistant et sauvegardé
-avec la base ; le port `8072` (websocket) derrière le même reverse proxy que `8069` ;
-les secrets injectés par l'outil de déploiement, jamais versionnés ; pour les serveurs,
-un jeton `read:packages` si les paquets sont privés.
+Plan for: `/var/lib/odoo` (filestore) on a persistent volume, backed up with the
+database; port `8072` (websocket) behind the same reverse proxy as `8069`; secrets
+injected by the deployment tool, never committed; on servers, a `read:packages` token if
+the packages are private.
 
-## Mises à jour des dépendances
+## Dependency updates
 
-- **Image Odoo** : `odoo-image-bump.yml` ouvre une PR qui met à jour `ARG ODOO_IMAGE`
-  (tag daté + digest) ; la CI de cette PR publie la nouvelle `base:<clé>`. Les PR créées
-  avec `GITHUB_TOKEN` ne déclenchent pas la CI : définir le secret `ODOO_BUMP_TOKEN`
-  (PAT fine-grained ou token d'app GitHub) pour l'avoir. Le cron ne tourne que sur la
-  branche par défaut ; lancer le workflow à la main pour une autre branche de version.
-- **Actions, pip, npm** : Dependabot (PR hebdomadaires, jamais fusionnées
-  automatiquement).
-- **Hooks pre-commit** : `pre-commit autoupdate` dans le dev container, puis PR.
+- **Odoo image**: `odoo-image-bump.yml` opens a pull request that updates
+  `ARG ODOO_IMAGE` (dated tag + digest); the CI of that pull request publishes the new
+  `base:<key>`. Pull requests created with `GITHUB_TOKEN` do not trigger the CI: set the
+  secret `ODOO_BUMP_TOKEN` (fine-grained personal access token or GitHub App token) to
+  get it. The schedule runs only on the default branch; run the workflow by hand for
+  another version branch.
+- **Actions, pip, npm**: Dependabot (weekly pull requests, never merged automatically).
+- **pre-commit hooks**: `pre-commit autoupdate` in the dev container, then a pull
+  request.
 
-## Sur GitHub
-
-Ce qui n'a pas pu être vérifié en local et est à contrôler au premier push : affichage
-des groupes de jobs, droits des paquets imbriqués, suppression de versions par
-`cleanup.yml`, chemin des PR de fork, cache `type=gha`.
+## Following the CI
 
 ```sh
-gh run list --workflow ci.yml --limit 10   # derniers runs
-gh run watch                               # suivre le run en cours
-gh run view <id> --log-failed              # logs d'un job en échec
+gh run list --workflow ci.yml --limit 10   # latest runs
+gh run watch                               # follow the current run
+gh run view <id> --log-failed              # logs of a failed job
 ```

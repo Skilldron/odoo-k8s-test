@@ -1,11 +1,11 @@
 {
-  // Configurations de debug Odoo (debugpy). Odoo tourne en mode threadé (workers = 0),
-  // condition nécessaire pour que les breakpoints soient fiables.
-  // `--dev=reload` n'est pas utilisé ici : le redémarrage du process détache le debugger.
+  // Odoo debug configurations (debugpy). Odoo runs threaded (workers = 0), which
+  // breakpoints need to be reliable.
+  // No `--dev=reload` here: restarting the process detaches the debugger.
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Odoo : serveur",
+      "name": "Odoo: server",
       "type": "debugpy",
       "request": "launch",
       "program": "/opt/venv/bin/odoo",
@@ -14,7 +14,7 @@
       "justMyCode": false
     },
     {
-      "name": "Odoo : mettre à jour un module",
+      "name": "Odoo: update a module",
       "type": "debugpy",
       "request": "launch",
       "program": "/opt/venv/bin/odoo",
@@ -23,7 +23,7 @@
       "justMyCode": false
     },
     {
-      "name": "Odoo : tests d'un module",
+      "name": "Odoo: test a module",
       "type": "debugpy",
       "request": "launch",
       "program": "/opt/venv/bin/odoo",
@@ -42,7 +42,7 @@
       "justMyCode": false
     },
     {
-      "name": "Odoo : shell",
+      "name": "Odoo: shell",
       "type": "debugpy",
       "request": "launch",
       "program": "/opt/venv/bin/odoo",
@@ -55,19 +55,19 @@
     {
       "id": "database",
       "type": "promptString",
-      "description": "Base de données",
+      "description": "Database",
       "default": "odoo20"
     },
     {
       "id": "testDatabase",
       "type": "promptString",
-      "description": "Base de test",
+      "description": "Test database",
       "default": "odoo20_test"
     },
     {
       "id": "module",
       "type": "promptString",
-      "description": "Module technique (ex. sale_custom)"
+      "description": "Technical module name (e.g. sale_custom)"
     }
   ]
 }

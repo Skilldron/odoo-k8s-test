@@ -1,42 +1,42 @@
-# Modèle de branches
+# Branching model
 
-## Projets créés depuis le modèle : Git Flow
+## Projects created from the template: Git Flow
 
-Recommandé pour un vrai projet. Chaque branche correspond à un environnement, et la CI
-([ci.md](ci.md)) publie l'image correspondante.
+Recommended for a real project. Each branch maps to an environment, and the CI
+([ci.md](ci.md)) publishes the matching image.
 
-| Branche / événement    | Rôle                             | Image publiée       | Environnement |
-| ---------------------- | -------------------------------- | ------------------- | ------------- |
-| `feature/<sujet>` → PR | développement, revue             | `builds:pr-<n>`     | review        |
-| `develop`              | intégration continue             | `builds:develop`    | testing       |
-| `release/X.Y.Z`        | stabilisation, validation métier | `X.Y.Z-rc.<N>`      | recette       |
-| `hotfix/X.Y.Z`         | correctif urgent de la prod      | `X.Y.Z-rc.<N>`      | recette       |
-| `main` + tag `vX.Y.Z`  | production                       | `X.Y.Z` (rc promue) | prod          |
+| Branch / event         | Role                           | Published image       | Environment |
+| ---------------------- | ------------------------------ | --------------------- | ----------- |
+| `feature/<topic>` → PR | development, review            | `builds:pr-<n>`       | review      |
+| `develop`              | integration                    | `builds:develop`      | —           |
+| `release/X.Y.Z`        | stabilization, user acceptance | `X.Y.Z-rc.<N>`        | staging     |
+| `hotfix/X.Y.Z`         | urgent fix of production       | `X.Y.Z-rc.<N>`        | preprod     |
+| `main` + tag `vX.Y.Z`  | production                     | `X.Y.Z` (rc promoted) | production  |
 
-### Règles
+### Rules
 
-- **Versions SemVer.** Une release prépare la version suivante (`release/1.3.0`), un
-  hotfix corrige la version en prod en incrémentant son patch (`hotfix/1.2.1`). La CI
-  refuse une branche `release/` ou `hotfix/` qui n'est pas `X.Y.Z`.
-- **Tout passe par la recette.** `release/*` et `hotfix/*` publient une release
-  candidate à chaque push ; c'est la dernière rc, validée en recette, qui est promue en
-  prod au tag `vX.Y.Z`, sans rebuild.
-- **Le tag doit porter exactement le code de la dernière rc.** Sinon la promotion est
-  refusée (contrôle du label `odoo.template.tree`). Le mode de merge (merge commit,
-  squash) n'a pas d'importance : seul le contenu compte.
-- `main` et `develop` ne reçoivent que des PR, CI verte obligatoire (protection
-  ci-dessous).
-- Après une release ou un hotfix : **back-merge** dans `develop` (ou dans la release en
-  cours, voir cas 2).
-- La recette est **partagée** : quand une release et un hotfix sont en cours en même
-  temps, le dernier déployé occupe l'environnement.
+- **SemVer versions.** A release prepares the next version (`release/1.3.0`), a hotfix
+  fixes the version in production by bumping its patch (`hotfix/1.2.1`). The CI refuses
+  a `release/` or `hotfix/` branch that is not `X.Y.Z`.
+- **Everything is validated before production.** `release/*` and `hotfix/*` publish a
+  release candidate on every push. A release is validated in staging, a hotfix in
+  preprod, the mirror of production. The last rc is promoted to production when `vX.Y.Z`
+  is tagged, without a rebuild.
+- **The tag must carry exactly the code of the last rc.** Otherwise the promotion is
+  refused (check of the `odoo.template.tree` label). The merge method (merge commit,
+  squash) does not matter: only the content counts.
+- `main` and `develop` only receive pull requests, with a green CI (protection below).
+- After a release or a hotfix: **back-merge** into `develop` (or into the release in
+  progress, see case 2).
+- A hotfix does not disturb the release under test: staging keeps the release while
+  preprod validates the hotfix.
 
-### Cycle d'une release
+### Release cycle
 
 ```sh
 git switch develop && git pull
-git switch -c release/1.3.0 && git push -u origin release/1.3.0   # → 1.3.0-rc.N en recette
-# corrections éventuelles sur release/1.3.0 : chaque push publie une nouvelle rc
+git switch -c release/1.3.0 && git push -u origin release/1.3.0   # → 1.3.0-rc.N in staging
+# fixes on release/1.3.0, if any: each push publishes a new rc
 gh pr create --base main --head release/1.3.0 --title "Release 1.3.0"
 gh pr merge release/1.3.0 --merge
 git switch main && git pull
@@ -44,11 +44,12 @@ gh release create v1.3.0 --target main --title "v1.3.0" --generate-notes   # →
 gh pr create --base develop --head main --title "Back-merge v1.3.0"
 ```
 
-`gh release create` crée le tag `v1.3.0` ; le job `promote` publie l'image `1.3.0`.
+`gh release create` creates the `v1.3.0` tag; the `promote` job publishes the `1.3.0`
+image.
 
-### Hotfix, cas 1 : aucune release en cours
+### Hotfix, case 1: no release in progress
 
-La prod tourne en `1.2.0`.
+Production runs `1.2.0`.
 
 ```
 main      ──●(v1.2.0)─────────────────────●(v1.2.1)──►
@@ -56,18 +57,18 @@ main      ──●(v1.2.0)─────────────────�
 hotfix/1.2.1  ●── fix ──●── fix ──────────●     \ (back-merge)
                         │         │               \
                      1.2.1-rc.N  1.2.1-rc.N+1      ▼
-                     (recette)   (recette)      develop
+                     (preprod)   (preprod)      develop
 ```
 
-1. `git switch -c hotfix/1.2.1 main`, correctif, push → `1.2.1-rc.N` en recette.
-2. Corrections éventuelles : chaque push publie une nouvelle rc.
-3. Validé : merge dans `main`, `gh release create v1.2.1` → dernière rc promue en
+1. `git switch -c hotfix/1.2.1 main`, fix, push → `1.2.1-rc.N` in preprod.
+2. Further fixes, if any: each push publishes a new rc.
+3. Validated: merge into `main`, `gh release create v1.2.1` → the last rc is promoted to
    `1.2.1`.
-4. Back-merge du hotfix dans `develop`.
+4. Back-merge the hotfix into `develop`.
 
-### Hotfix, cas 2 : la release 1.3.0 est en recette
+### Hotfix, case 2: release 1.3.0 is in staging
 
-La prod tourne en `1.2.0`, `release/1.3.0` a publié `1.3.0-rc.1`.
+Production runs `1.2.0`, `release/1.3.0` has published `1.3.0-rc.1`.
 
 ```
 main         ──●(v1.2.0)──────────────●(v1.2.1)─────────────●(v1.3.0)──►
@@ -79,27 +80,29 @@ release/1.3.0  ●── 1.3.0-rc.1 ──────────────�
 develop ───────●                                            ▼ (back-merge)
 ```
 
-1. `hotfix/1.2.1` part de `main` (la prod), pas de la release. Push → `1.2.1-rc.N`.
-2. Validation en recette : le hotfix y remplace temporairement `1.3.0-rc.1`.
-3. Merge dans `main`, tag `v1.2.1` → `1.2.1-rc.N` promue en `1.2.1`, déployée en prod.
-4. Merge du hotfix **dans `release/1.3.0`** (règle Git Flow quand une release est en
-   cours, à la place de `develop`) → `1.3.0-rc.2` contient le correctif ; la recette
-   repasse sur la release.
-5. Recette validée : merge de `release/1.3.0` dans `main`, tag `v1.3.0` → `1.3.0-rc.2`
-   promue en **`1.3.0`** (la release garde son numéro).
-6. Back-merge dans `develop` : le correctif y arrive avec la release.
+1. `hotfix/1.2.1` starts from `main` (production), not from the release. Push →
+   `1.2.1-rc.N`.
+2. Validation in preprod; staging keeps `1.3.0-rc.1` under test.
+3. Merge into `main`, tag `v1.2.1` → `1.2.1-rc.N` promoted to `1.2.1`, deployed to
+   production.
+4. Merge the hotfix **into `release/1.3.0`** (the Git Flow rule while a release is in
+   progress, instead of `develop`) → `1.3.0-rc.2` includes the fix and replaces the
+   previous rc in staging.
+5. Staging validated: merge `release/1.3.0` into `main`, tag `v1.3.0` → `1.3.0-rc.2`
+   promoted to **`1.3.0`** (the release keeps its number).
+6. Back-merge into `develop`: the fix arrives there with the release.
 
-**Filet de sécurité** : si l'étape 4 est oubliée, `main` contient le hotfix mais pas la
-dernière rc de 1.3.0 ; au tag `v1.3.0`, la promotion est **refusée** au lieu d'envoyer
-en prod une version sans le correctif. Fusionner le hotfix dans la release (nouvelle
-rc), valider, puis re-taguer.
+**Safety net**: if step 4 is forgotten, `main` holds the hotfix but not the last rc of
+1.3.0; on the `v1.3.0` tag, the promotion is **refused** instead of sending a version
+without the fix to production. Merge the hotfix into the release (new rc), validate,
+then tag again.
 
-### Protéger les branches (une fois, à la création du projet)
+### Protecting the branches (once, when the project is created)
 
 ```sh
 gh api repos/{owner}/{repo}/rulesets --method POST --input - <<'EOF'
 {
-  "name": "main et develop",
+  "name": "main and develop",
   "target": "branch",
   "enforcement": "active",
   "conditions": {"ref_name": {"include": ["refs/heads/main", "refs/heads/develop"], "exclude": []}},
@@ -120,24 +123,22 @@ gh api repos/{owner}/{repo}/rulesets --method POST --input - <<'EOF'
 EOF
 ```
 
-Les contrôles portent le nom `<groupe> / <job>`. Une PR de fork passe par
-`image / local` et ne publie rien : elle ne satisfait pas ces contrôles et doit être
-reprise dans une branche du dépôt par un mainteneur.
+Checks are named `<group> / <job>`. A pull request from a fork goes through
+`image / local` and publishes nothing: it does not satisfy these checks, and a
+maintainer must take it over in a branch of the repository.
 
-## Le dépôt modèle lui-même
+## The template repository itself
 
-Une branche longue par version d'Odoo et par moyen de déploiement, sans Git Flow :
+One long-lived branch per Odoo version and per deployment method, without Git Flow:
 
-| Branche                  | Contenu                                   |
-| ------------------------ | ----------------------------------------- |
-| `20.0`, `19.0`, …        | environnement de dev, CI, image de prod   |
-| `20.0-docker-deployment` | `20.0` + déploiement Docker (à venir)     |
-| `20.0-k8s-deployment`    | `20.0` + déploiement Kubernetes (à venir) |
+| Branch                   | Content                                       |
+| ------------------------ | --------------------------------------------- |
+| `20.0`, `19.0`, …        | development environment, CI, production image |
+| `20.0-docker-deployment` | `20.0` + Docker deployment (planned)          |
+| `20.0-k8s-deployment`    | `20.0` + Kubernetes deployment (planned)      |
 
-Les évolutions passent par une branche de travail et une PR vers la branche de version
-(CI : qualité, image, tests). Une évolution de `20.0` est ensuite fusionnée dans ses
-branches de déploiement.
+Changes go through a work branch and a pull request to the version branch (CI: quality,
+image, tests). A change to `20.0` is then merged into its deployment branches.
 
-Un projet démarre depuis la branche qui lui convient (« Use this template » avec «
-Include all branches », ou copie de la branche), puis la renomme en `main` et crée
-`develop`.
+A project starts from the branch that fits it ("Use this template" with "Include all
+branches", or a copy of the branch), then renames it to `main` and creates `develop`.

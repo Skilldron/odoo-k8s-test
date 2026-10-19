@@ -1,4 +1,4 @@
-// ESLint (flat config) pour le JS des addons Odoo (modules ES, OWL).
+// ESLint (flat config) for the JS of the Odoo addons (ES modules, OWL).
 import js from "@eslint/js";
 import globals from "globals";
 

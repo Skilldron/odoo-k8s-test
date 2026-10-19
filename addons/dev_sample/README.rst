@@ -2,7 +2,7 @@
 Dev Sample
 ==========
 
-Module d'exemple livré avec le dépôt modèle. Il sert à valider l'environnement de
-développement : breakpoints, autocomplétion OdooLS, lint (pre-commit) et tests.
+Sample module shipped with the template repository. It checks the development
+environment: breakpoints, OdooLS completion, lint (pre-commit) and tests.
 
-Il peut être supprimé une fois le projet démarré.
+Delete it once the project has started.

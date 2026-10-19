@@ -16,7 +16,7 @@ node_modules/
 *.log
 *.session.sql
 
-# Éditeurs / OS
+# Editors / OS
 .idea/
 .DS_Store
 *.swp
@@ -24,5 +24,5 @@ node_modules/
 # IA
 .claude/
 
-# Clones locaux de dépôts OCA installés en éditable (pip install -e), voir README
+# Local clones of OCA repositories installed as editable (pip install -e), see README
 third-party/

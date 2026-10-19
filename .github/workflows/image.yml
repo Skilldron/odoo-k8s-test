@@ -75,7 +75,7 @@ jobs:
               echo "version=$version"
               echo "refs=$refs"
           } >>"$GITHUB_OUTPUT"
-          echo "Version \`$version\`, publication : \`$refs\` (publish=$publish)" >>"$GITHUB_STEP_SUMMARY"
+          echo "Version \`$version\`, references: \`$refs\` (publish=$publish)" >>"$GITHUB_STEP_SUMMARY"
 
   base:
     needs: plan
