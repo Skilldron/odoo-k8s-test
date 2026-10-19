@@ -1,6 +1,6 @@
 # Optional, for a namespace whose traffic is denied by default: lets Odoo (and its Jobs)
 # reach the CNPG database, and the CNPG operator and plugin manage it. Every CNPG cluster of
-# the namespace is covered, including one restored by the runbook (odoo-db-2).
+# the namespace is covered, including one restored by ci/deploy-restore.sh (odoo-db-r<N>).
 #   kubectl -n <project>-prod apply -f deploy/examples/database-networkpolicy.yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

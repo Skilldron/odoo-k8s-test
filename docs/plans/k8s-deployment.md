@@ -290,8 +290,8 @@ puis remet l'ancienne image. Restaurer automatiquement ne perd aucune saisie : O
 arrêté depuis le snapshot.
 
 **États d'un point de restauration**, étiquette `<préfixe>/upgrade-state` sur la
-`Backup` (préfixe à choisir pour le chart publié ; `odoo.example.com` dans les exemples,
-avec `<préfixe>/backup-type=pre-upgrade`) :
+`Backup` (préfixe `odoo.haroldd.dev`, valeur `labelPrefix` du chart, avec
+`<préfixe>/backup-type=pre-upgrade`) :
 
 | État        | Posé par                            | Signification                                              |
 | ----------- | ----------------------------------- | ---------------------------------------------------------- |
@@ -676,8 +676,9 @@ Un seul chart `odoo` pour les trois environnements, conforme à `kubernetes-patt
 - `odoo.persistence` : `enabled` (`true` par défaut), `accessMode`, `size`,
   `storageClass`, `existingClaim` (restauration manuelle du filestore) (§3.4) ;
 - `jobs` : délais des Jobs (`activeDeadlineSeconds`), délai du snapshot ;
-- `restorePoints` : préfixe des étiquettes, `keep` (3, au moins 1), image avec `sh` et
-  `kubectl` des Jobs `stop-snapshot` et `validate`, délai du snapshot (§6.4) ;
+- `labelPrefix` : préfixe des étiquettes et annotations du chart (`odoo.haroldd.dev`) ;
+- `restorePoints` : `keep` (3, au moins 1), image avec `sh` et `kubectl` des Jobs
+  `stop-snapshot` et `validate`, délai du snapshot (§6.4) ;
 - noms des StorageClasses, de la `VolumeSnapshotClass`, du secret de registre ; Gateway
   (`parentRefs`) et hôtes ; Mailpit ; ressources.
 
@@ -1243,6 +1244,45 @@ Scénarios :
     réussir ;
   - mode sans PVC : point de restauration réduit à la `Backup`.
 - Restent pour la phase 6 : RWO sur plusieurs nœuds, Role de la CI, durées sur Longhorn.
+
+**Phase 3 bis, résultats (2026-10-18).** Chart, scripts et exemples livrés.
+`ci/chart-lint.sh` : 49 contrôles sur 49 (trois mutations du chart vérifiées : verbe
+ajouté au Role, `blockOwnerDeletion`, affinité retirée, chacune fait échouer son
+contrôle). `ci/chart-e2e.sh` : 116 scénarios sur 116 sur kind (Kubernetes 1.37, CNPG
+1.30.1, PSA `restricted`), environ 40 min. Écarts et précisions :
+
+- **Valeurs** : `restorePoints.volumeSnapshotClass` remplace
+  `snapshots.volumeSnapshotClass` ; `database.external.host` est le Service stable, dans
+  le namespace de la release (son premier label donne le nom du Service). Préfixe des
+  étiquettes `odoo.haroldd.dev` (décision du 2026-10-19), valeur `labelPrefix` commune à
+  toutes les étiquettes du chart, `odoo.dev/*` compris (domaine qui n'est pas le nôtre).
+- **Jeton des hooks** : pas de montage automatique ; un volume projeté le monte dans les
+  seuls conteneurs `kubectl` de `stop-snapshot` et `validate`, pas dans le conteneur
+  `restore-point` (image Odoo).
+- **`kubectl scale`** passe avec `get` et `patch` sur `deployments/scale`, sans `update`
+  (vérifié en e2e).
+- **Affinité RWO** : le pod Odoo porte l'étiquette `<préfixe>/digest` ; le Job `migrate`
+  en `post-*` vise le pod de la même image, pas l'ancien pod en cours d'arrêt d'une
+  review.
+- **`admin-user-password`** lu en `optional` : la clé peut disparaître après la première
+  installation ; `db-init` échoue avec un message clair seulement s'il doit créer la
+  base sans elle.
+- **Révision visée par `helm rollback`** (`ci/deploy-restore.sh`) : la dernière révision
+  `deployed` ou `superseded` antérieure à celle du point (`-r<N>`), ou à la dernière
+  révision sans point. Avec `POINT` (retour arrière manuel), Odoo est d'abord arrêté.
+- **Sauvegarde nocturne** : le chart `cnpg/cluster` lance une `Backup` à l'installation
+  (`immediate: true`). Elle n'a pas les étiquettes d'un point de restauration : ni la
+  rétention ni la CI ne la voient.
+- **Échecs injectés** dans l'e2e par un `helm upgrade` à la main : section
+  `volumeSnapshot` retirée (snapshot de la base), classe inexistante (snapshot du
+  filestore), point validé repassé `pending` (point orphelin),
+  `ValidatingAdmissionPolicy` qui refuse la suppression d'une `Backup` (erreur de
+  purge).
+- **Retour du mode sans PVC au PVC** : Helm réadopte le volume gardé (`keep`), Odoo
+  retrouve son filestore.
+- **Reste pour la phase 5** : Role de la CI (`deploy/examples/ci-access.yaml`), dont les
+  droits du job `restore` (`Cluster`, `ObjectStore`, Service, `Backup`, release Helm de
+  la base) ; documentation du chart publiable et runbooks.
 
 **Phase 6, scénarios :**
 

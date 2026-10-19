@@ -25,10 +25,14 @@ secrets:
 database:
   type: external
   external:
-    secret: odoo-db-app
-    cnpgCluster: odoo-db
+    # Stable Service odoo-db (deploy/examples/database-service.yaml) and the Secret of
+    # the declared role odoo (deploy/examples/database-credentials.example.sh)
+    host: odoo-db
+    port: 5432
+    secret: odoo-db-credentials
 
-snapshots:
+restorePoints:
+  # deletionPolicy: Delete (deploy/examples/longhorn-volumesnapshotclass.yaml)
   volumeSnapshotClass: csi-snapclass
 
 route:

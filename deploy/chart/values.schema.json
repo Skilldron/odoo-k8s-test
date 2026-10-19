@@ -28,6 +28,10 @@
   "properties": {
     "environment": {"enum": ["review", "recette", "production"]},
     "project": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+    "labelPrefix": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$"
+    },
     "image": {
       "type": "object",
       "required": ["repository", "digest"],
@@ -40,7 +44,7 @@
     "odoo": {
       "type": "object",
       "properties": {
-        "replicas": {"enum": [0, 1]},
+        "replicas": {"type": "integer", "minimum": 0},
         "modules": {
           "type": "array",
           "items": {"type": "string", "pattern": "^[a-z0-9_]+$"}
@@ -49,6 +53,16 @@
           "type": "object",
           "propertyNames": {"pattern": "^[a-z0-9_.]+$"},
           "additionalProperties": {"$ref": "#/definitions/iniSection"}
+        },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "accessMode": {"enum": ["ReadWriteOnce", "ReadWriteMany"]},
+            "storageClass": {"type": "string"},
+            "size": {"type": "string"},
+            "existingClaim": {"type": "string"}
+          }
         }
       }
     },
@@ -58,15 +72,6 @@
         "migrate": {
           "type": "object",
           "properties": {
-            "run": {"type": "boolean"},
-            "activeDeadlineSeconds": {"type": "integer", "minimum": 60},
-            "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0}
-          }
-        },
-        "dbInit": {
-          "type": "object",
-          "properties": {
-            "run": {"type": "boolean"},
             "activeDeadlineSeconds": {"type": "integer", "minimum": 60}
           }
         }
@@ -99,21 +104,20 @@
         "external": {
           "type": "object",
           "properties": {
-            "secret": {"type": "string"},
-            "cnpgCluster": {"type": "string"}
+            "host": {"type": "string"},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "secret": {"type": "string"}
           }
         }
       }
     },
-    "state": {
+    "restorePoints": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
-        "initialized": {"type": "boolean"},
-        "generation": {"type": "integer", "minimum": 1},
-        "filestore": {"type": "string"},
-        "databaseSecret": {"type": "string"},
-        "cnpgCluster": {"type": "string"}
+        "keep": {"type": "integer", "minimum": 1},
+        "volumeSnapshotClass": {"type": "string"},
+        "timeoutSeconds": {"type": "integer", "minimum": 60},
+        "image": {"type": "string", "minLength": 1}
       }
     },
     "mailpit": {

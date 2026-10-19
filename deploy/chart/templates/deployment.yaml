@@ -18,10 +18,36 @@ spec:
       labels:
         {{- include "odoo.labels" . | nindent 8 }}
         app.kubernetes.io/component: odoo
+        {{ .Values.labelPrefix }}/digest: {{ include "odoo.shortDigest" . | quote }}
       annotations:
         checksum/config: {{ include "odoo.conf" . | sha256sum }}
     spec:
       {{- include "odoo.podCommon" . | nindent 6 }}
+      initContainers:
+        {{- /*
+        Waits until the database is ready for this image: click-odoo-update records the
+        checksums of the modules at the end of its first pass (migrate Job). A first
+        installation or a review runs the migrate Job after Helm has applied the release
+        (post-install, post-upgrade), while this pod waits. After an update, the marker
+        exists: no wait.
+        */}}
+        - name: wait-db
+          image: {{ include "odoo.image" . }}
+          command: [sh, -c]
+          args:
+            - >-
+              until psql -tAc "select 1 from ir_config_parameter
+              where key = 'module_auto_update.installed_checksums'" 2>/dev/null | grep -q 1;
+              do echo "waiting for the database $PGDATABASE (migrate Job)"; sleep 5; done
+          env:
+            {{- include "odoo.env" . | nindent 12 }}
+            - {name: HOME, value: /tmp}
+          resources:
+            {{- toYaml .Values.odoo.waitDb.resources | nindent 12 }}
+          securityContext:
+            {{- include "odoo.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
       containers:
         - name: odoo
           image: {{ include "odoo.image" . }}

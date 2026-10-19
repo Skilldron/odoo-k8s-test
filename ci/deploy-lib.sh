@@ -1,8 +1,9 @@
 # shellcheck shell=bash
-# Helpers of ci/deploy.sh and ci/deploy-rollback.sh (sourced), see §3.2 and §3.3 of
+# Helpers of ci/deploy.sh and ci/deploy-restore.sh (sourced), see §3.2 and §3.3 of
 # docs/plans/k8s-deployment.md. Globals set by the caller: env (review | recette |
 # production), release, namespace, work (temporary directory), repository and digest (the
-# image). Env: EXTRA_VALUES, a values file added after those of the environment (tests).
+# image, ci/deploy.sh). Env: EXTRA_VALUES, a values file added after those of the
+# environment (tests).
 # shellcheck disable=SC2154 # those globals
 
 log() { echo "--- $*"; }
@@ -25,22 +26,14 @@ release_status() { # status of the current release, "none" without release
     helm status "$release" -n "$namespace" -o json 2>/dev/null | jq -r '.info.status' || echo none
 }
 
-save_state() { # $work/state.json: state of the environment, carried over by every deployment
-    if [ "$env" = review ]; then
-        echo '{}' >"$work/state.json"
-    else
-        release_values | jq '{state: (.state // {})}' >"$work/state.json"
-    fi
-}
-
-helm_odoo() { # helm_odoo [helm args...]: the chart with the values of the environment, its
-    # state and the image; the caller adds the settings of the step
+helm_odoo() { # helm_odoo [helm args...]: the chart with the values of the environment and
+    # the image
     local extra=()
     if [ -n "${EXTRA_VALUES:-}" ]; then
         extra=(-f "$EXTRA_VALUES")
     fi
     helm upgrade --install "$release" deploy/chart -n "$namespace" \
-        -f "deploy/values/$env.yaml" ${extra[@]+"${extra[@]}"} -f "$work/state.json" \
+        -f "deploy/values/$env.yaml" ${extra[@]+"${extra[@]}"} \
         --set image.repository="$repository" --set image.digest="$digest" \
         --history-max 10 "$@"
 }
@@ -78,51 +71,103 @@ cluster_object() { # cluster_object <resource> <name>: cluster-scoped object of 
     esac
 }
 
-cnpg_ready() { # cnpg_ready <cluster>: ready, archiving its WAL, volume snapshots enabled
-    local cluster="$1" json
+active_cluster() { # active_cluster <service>: CNPG cluster in the selector of the stable Service
+    kubectl -n "$namespace" get service "$1" -o jsonpath='{.spec.selector.cnpg\.io/cluster}'
+}
+
+cnpg_ready() { # cnpg_ready <cluster>: ready, archiving its WAL, cold volume snapshots owned
+    # by their Backup (the administrator's patch, §4)
+    local cluster="$1" json snapshot
     json="$(kubectl -n "$namespace" get clusters.postgresql.cnpg.io "$cluster" -o json)" ||
         fail "CNPG Cluster $cluster not found in $namespace"
     condition() { jq -r --arg t "$1" '.status.conditions[]? | select(.type == $t) | .status' <<<"$json"; }
     [ "$(condition Ready)" = True ] || fail "CNPG Cluster $cluster is not ready"
     [ "$(condition ContinuousArchiving)" = True ] ||
         fail "CNPG Cluster $cluster does not archive its WAL (ContinuousArchiving)"
-    [ -n "$(jq -r '.spec.backup.volumeSnapshot.className // empty' <<<"$json")" ] ||
-        fail "CNPG Cluster $cluster has no spec.backup.volumeSnapshot, no restore point possible. Apply the patch of deploy/examples/cnpg-cluster.values.yaml: kubectl -n $namespace patch cluster $cluster --type merge -p '{\"spec\":{\"backup\":{\"volumeSnapshot\":{\"className\":\"<VolumeSnapshotClass>\",\"online\":false}}}}'"
+    snapshot="$(jq -c '.spec.backup.volumeSnapshot // {} |
+        {className, online, snapshotOwnerReference}' <<<"$json")"
+    [ "$(jq -r '.className != null and .online == false and .snapshotOwnerReference == "backup"' \
+        <<<"$snapshot")" = true ] ||
+        fail "CNPG Cluster $cluster: spec.backup.volumeSnapshot is $snapshot, no restore point possible. Apply the patch of deploy/examples/cnpg-cluster.values.yaml: kubectl -n $namespace patch cluster $cluster --type merge -p '{\"spec\":{\"backup\":{\"volumeSnapshot\":{\"className\":\"<VolumeSnapshotClass>\",\"online\":false,\"snapshotOwnerReference\":\"backup\"}}}}'"
 }
 
-wait_pods_gone() { # Odoo pods of the release terminated
-    kubectl -n "$namespace" wait pod --for=delete --timeout=300s \
-        -l "app.kubernetes.io/instance=$release,app.kubernetes.io/component=odoo" >/dev/null 2>&1 || true
+snapshot_class_deletes() { # snapshot_class_deletes <class>: deletionPolicy Delete, or the
+    # purge of the restore points frees nothing; not checked when the CI may not read it
+    local out
+    out="$(kubectl get volumesnapshotclasses.snapshot.storage.k8s.io "$1" \
+        -o jsonpath='{.deletionPolicy}' 2>&1)" || case "$out" in
+    *[Ff]orbidden*)
+        echo "    VolumeSnapshotClass $1: not readable by the CI, deletionPolicy not checked"
+        return 0
+        ;;
+    *) fail "VolumeSnapshotClass $1 not found" ;;
+    esac
+    [ "$out" = Delete ] ||
+        fail "VolumeSnapshotClass $1 has deletionPolicy $out: deleting a restore point would not free its space (deletionPolicy: Delete required)"
 }
 
-wait_job() { # wait_job <job> <timeout s>: 0 when complete; otherwise 1, with the logs of
-    # every container in $work/<job>.log
-    local job="$1" deadline=$((SECONDS + $2)) state
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        state="$(kubectl -n "$namespace" get job "$job" \
-            -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}' 2>/dev/null || true)"
-        case "$state" in
-        *Complete*) return 0 ;;
-        *Failed*) break ;;
-        esac
-        sleep 5
+points() { # points <states> [prefix]: "<name> <phase> <filestore snapshot> <target image>"
+    # per restore point of the release in those states (comma-separated), oldest first
+    local prefix="${2:-$(value .labelPrefix)}"
+    kubectl -n "$namespace" get backups.postgresql.cnpg.io --sort-by=.metadata.creationTimestamp \
+        -l "app.kubernetes.io/instance=$release,$prefix/backup-type=pre-upgrade,$prefix/upgrade-state in ($1)" \
+        -o json | jq -r --arg p "$prefix" '.items[] | [.metadata.name, (.status.phase // "-"),
+            (.metadata.annotations["\($p)/filestore"] // "" | if . == "" then "-" else . end),
+            (.metadata.annotations["\($p)/target-image"] // "-")] | join(" ")'
+}
+
+complete_point() { # complete_point <phase> <filestore snapshot>: Backup completed and its
+    # filestore snapshot, if any, ready to use (§3.3)
+    [ "$1" = completed ] || return 1
+    [ "$2" = - ] && return 0
+    [ "$(kubectl -n "$namespace" get volumesnapshots.snapshot.storage.k8s.io "$2" \
+        -o jsonpath='{.status.readyToUse}' 2>/dev/null)" = true ]
+}
+
+complete_pending() { # complete_pending [prefix]: "<name> <target image>" of the complete
+    # pending restore points of the release
+    local name phase fs target
+    points pending "$@" | while read -r name phase fs target; do
+        if complete_point "$phase" "$fs"; then
+            echo "$name $target"
+        fi
     done
-    kubectl -n "$namespace" logs "job/$job" --all-containers --ignore-errors --prefix --tail=100 \
-        >"$work/$job.log" 2>&1 || true
-    return 1
 }
 
-job_logs_summary() { # job_logs_summary <job>: last lines of its logs in the job summary
-    {
-        echo
-        echo "<details><summary>Logs du Job $1</summary>"
-        echo
-        echo '```'
-        tail -40 "$work/$1.log"
-        echo '```'
-        echo "</details>"
-    } | ci_summary
-    tail -40 "$work/$1.log" >&2
+serving() { # serving <image>: the Odoo Deployments of the release run that image and are
+    # available
+    kubectl -n "$namespace" get deployments \
+        -l "app.kubernetes.io/instance=$release,app.kubernetes.io/component=odoo" -o json |
+        jq -e --arg i "$1" '[.items[] | select(.spec.template.spec.containers[0].image == $i
+            and (.status.availableReplicas // 0) > 0)] | length > 0' >/dev/null
+}
+
+hook_jobs() { # hook_jobs <condition>: hook Jobs of the release with that condition true
+    # (Failed, Complete) or still active (Active)
+    kubectl -n "$namespace" get jobs -l "app.kubernetes.io/instance=$release" -o json |
+        jq -r --arg c "$1" '.items[] | select(
+            if $c == "Active" then (.status.active // 0) > 0
+            else any(.status.conditions[]?; .type == $c and .status == "True") end) |
+            .metadata.name'
+}
+
+failed_jobs_summary() { # logs of the failed hook Jobs of the release, in the job summary
+    local job
+    for job in $(hook_jobs Failed); do
+        kubectl -n "$namespace" logs "job/$job" --all-containers --ignore-errors --prefix \
+            --tail=100 >"$work/$job.log" 2>&1 || true
+        {
+            echo
+            echo "<details><summary>Logs du Job $job</summary>"
+            echo
+            echo '```'
+            tail -40 "$work/$job.log"
+            echo '```'
+            echo "</details>"
+        } | ci_summary
+        echo "--- logs of the Job $job" >&2
+        tail -40 "$work/$job.log" >&2
+    done
 }
 
 odoo_url() { # public URL of Odoo, empty without HTTPRoute

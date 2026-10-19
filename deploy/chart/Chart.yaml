@@ -1,6 +1,8 @@
 apiVersion: v2
 name: odoo
-description: Odoo 20 du projet (review, recette, production), déployé par ci/deploy.sh
+description:
+  Odoo 20 (review, recette, production) ; le chart porte le cycle de mise à jour (hooks
+  arrêt, point de restauration, migration, validation)
 type: application
 version: 0.1.0
 appVersion: "20.0"

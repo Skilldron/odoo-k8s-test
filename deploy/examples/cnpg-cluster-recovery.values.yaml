@@ -1,22 +1,24 @@
-# Runbook "restore the database" after a failed update: a new cluster, odoo-db-2, created
-# from the volume snapshot of the restore point (its name is given by the CI summary). The
-# failed cluster stays in place for analysis, and so do its snapshots.
+# Restoration of the database from a restore point, by hand. The restore job of the
+# workflow (ci/deploy-restore.sh) does the same with the values of the active cluster.
+# A new cluster, odoo-db-r<N>, is created from the volume snapshot of the restore point
+# <cluster>-preupgrade-r<N>; the previous cluster stays in place for analysis.
 #
-#   helm install odoo-db-2 cluster --repo https://cloudnative-pg.github.io/charts \
+#   helm install odoo-db-r<N> cluster --repo https://cloudnative-pg.github.io/charts \
 #     --version 0.9.0 -n <project>-prod \
 #     -f deploy/examples/cnpg-cluster.values.yaml \
 #     -f deploy/examples/cnpg-cluster-recovery.values.yaml \
-#     --set fullnameOverride=odoo-db-2 --set recovery.backupName=<restore point>
+#     --set fullnameOverride=odoo-db-r<N> --set recovery.backupName=<restore point>
 #
-# Then, as after every install of the database, the volumeSnapshot patch (see
-# cnpg-cluster.values.yaml) on odoo-db-2, or the next deployment is refused. Finally the
-# rollback workflow points Odoo to the Secret odoo-db-2-app.
+# Then the volumeSnapshot patch (see cnpg-cluster.values.yaml) on odoo-db-r<N>, the stable
+# Service switched to it (database-service.yaml), and the restore point labelled restored.
+# The declared role odoo keeps its password (Secret odoo-db-credentials).
 mode: recovery
+cluster:
+  instances: 1
 recovery:
   # The CNPG Backup of the restore point (method volumeSnapshot, same namespace)
   method: backup
   backupName: ""
-  # Same as the failed cluster (Secret odoo-db-2-app); Odoo's database comes with the
-  # snapshot
+  # Same as the restored cluster; Odoo's database comes with the snapshot
   database: app
   owner: odoo

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Static checks of the Helm chart (deploy/chart), without a cluster:
-# helm lint and kubeconform for the three environments, the generated odoo.conf compared
-# with an expected file, odoo.modules compared with addons/, and the guards of §6.3 of
-# docs/plans/k8s-deployment.md (refused values, no destructive command in any render).
-# Requires helm and kubeconform (KUBECONFORM to override the binary).
+# helm lint and kubeconform for the three environments (installation and update), the
+# generated odoo.conf compared with an expected file, odoo.modules compared with addons/,
+# the hooks of each case, the account of the hooks, the filestore modes, and the guards of
+# §6.3 of docs/plans/k8s-deployment.md (refused values, no destructive command in any
+# render). Requires helm and kubeconform (KUBECONFORM to override the binary).
 # Usage: ci/chart-lint.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -24,6 +25,11 @@ fail() {
     echo "FAIL $*" >&2
     failures=$((failures + 1))
 }
+check() { # check <description> <command...>
+    local description="$1"
+    shift
+    if "$@"; then pass "$description"; else fail "$description"; fi
+}
 
 render() { # render <env> [helm args...] > manifest
     local env="$1"
@@ -34,7 +40,22 @@ render() { # render <env> [helm args...] > manifest
         --set image.digest="$digest" "$@"
 }
 
-# 1. helm lint and kubeconform, every step of every environment
+doc() { # doc <file> <kind> <name>: one document of a render
+    awk -v k="kind: $2" -v n="  name: $3" '
+        /^---/ {if (hit) exit; buf = ""; kind = 0; name = 0; next}
+        {buf = buf $0 "\n"}
+        $0 == k {kind = 1}
+        $0 == n {name = 1}
+        kind && name {hit = 1}
+        END {if (hit) printf "%s", buf}' "$1"
+}
+hook_of() { doc "$1" Job "$2" | sed -n 's/^    helm.sh\/hook: //p'; } # hook_of <file> <job>
+has() { grep -q -- "$2" <<<"$1"; } # has <text> <pattern>
+lacks() { ! grep -q -- "$2" <<<"$1"; }
+equals() { [ "$1" = "$2" ]; }
+fails() { ! "$@"; }
+
+# 1. helm lint and kubeconform: review, first installation and update of recette and prod
 for env in review recette production; do
     if helm lint --quiet "$chart" -f "deploy/values/$env.yaml" \
         --set image.digest="$digest" >"$work/lint" 2>&1; then
@@ -43,46 +64,36 @@ for env in review recette production; do
         cat "$work/lint" >&2
         fail "helm lint $env"
     fi
-    render "$env" --set odoo.replicas=1 --set jobs.migrate.run=true >"$work/$env.yaml"
-    if "$kubeconform" -strict -summary -kubernetes-version 1.34.0 \
-        -schema-location default \
-        -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-        "$work/$env.yaml" >"$work/kc" 2>&1; then
-        pass "kubeconform $env ($(tail -1 "$work/kc"))"
-    else
-        cat "$work/kc" >&2
-        fail "kubeconform $env"
-    fi
+    render "$env" >"$work/$env.yaml"
+    [ "$env" = review ] || render "$env" --is-upgrade >"$work/$env-upgrade.yaml"
 done
-render recette --set state.generation=2 --set state.filestore=fs-snap \
-    --set state.databaseSecret=odoo-db-2-app >"$work/rollback.yaml"
-if grep -q "name: odoo-odoo-data-2" "$work/rollback.yaml" &&
-    grep -q "name: fs-snap" "$work/rollback.yaml" &&
-    grep -q "name: odoo-db-2-app" "$work/rollback.yaml"; then
-    pass "rollback render (filestore generation 2 from its snapshot, restored database)"
+if "$kubeconform" -strict -summary -kubernetes-version 1.34.0 \
+    -schema-location default \
+    -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+    "$work"/*.yaml >"$work/kc" 2>&1; then
+    pass "kubeconform ($(tail -1 "$work/kc"))"
 else
-    fail "rollback render"
-fi
-render production --set jobs.dbInit.run=true >"$work/first.yaml"
-# shellcheck disable=SC2016 # $(VAR) is expanded by Kubernetes, not by the shell
-if grep -q 'name: odoo-db-init-1$' "$work/first.yaml" &&
-    grep -qF 'args: [odoo, db, init, --password, $(ODOO_INIT_ADMIN_PASSWORD), $(PGDATABASE)]' \
-        "$work/first.yaml" && grep -q 'key: admin-user-password' "$work/first.yaml"; then
-    pass "first deployment render (db-init Job without demo, admin password of the application Secret)"
-else
-    fail "first deployment render"
+    cat "$work/kc" >&2
+    fail "kubeconform"
 fi
 
-# 2. odoo.conf generated from deploy/chart/tests/config-values.yaml
+# 2. odoo.conf generated from deploy/chart/tests/config-values.yaml; the hook ConfigMap is
+# the same
 helm template t "$chart" -f "$chart/tests/config-values.yaml" --set image.digest="$digest" \
-    --show-only templates/configmap-config.yaml |
-    awk '/^  odoo.conf: \|/ {f = 1; next} f {sub(/^    /, ""); print}' |
-    sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' >"$work/odoo.conf"
+    --show-only templates/configmap-config.yaml >"$work/config"
+conf() { # conf <ConfigMap>: its odoo.conf
+    doc "$work/config" ConfigMap "$1" |
+        awk '/^  odoo.conf: \|/ {f = 1; next} f {sub(/^    /, ""); print}' |
+        sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+}
+conf t-config >"$work/odoo.conf"
 if diff -u "$chart/tests/odoo.conf.expected" "$work/odoo.conf"; then
     pass "odoo.conf matches tests/odoo.conf.expected"
 else
     fail "odoo.conf differs from tests/odoo.conf.expected"
 fi
+check "hook ConfigMap t-odoo-conf-hook identical to t-config" \
+    diff -q "$work/odoo.conf" <(conf t-odoo-conf-hook)
 
 # 3. odoo.modules matches the folders of addons/
 modules="$(grep -o 'args: \[odoo, -i, [^,]*' "$work/recette.yaml" | sed 's/.*-i, //')"
@@ -106,9 +117,10 @@ refused() { # refused <description> <env> [helm args...]
 refused "ephemeral database in recette" recette --set database.type=ephemeral
 refused "ephemeral database in production" production --set database.type=ephemeral
 refused "review without ephemeral database" review --set database.type=external \
-    --set database.external.secret=x
+    --set database.external.secret=x --set database.external.host=x
 refused "database managed by the chart in recette" recette --set database.type=cnpg
 refused "external database without Secret" production --set database.external.secret=
+refused "external database without host" production --set database.external.host=
 refused "production without application Secret" production --set secrets.existingSecret=
 refused "password in odoo.conf" recette --set odoo.config.options.db_password=x
 refused "secret in a module section" recette --set odoo.config.queue_job.http_auth_password=x
@@ -117,8 +129,10 @@ refused "SMTP overridden while Mailpit is enabled" review --set odoo.config.opti
 refused "option also set by secrets.env" recette --set odoo.config.queue_job.http_auth_user=u \
     --set-json 'secrets.env=[{"name":"ODOO_QUEUE_JOB_HTTP_AUTH_USER","secret":"s","key":"k"}]'
 refused "image referenced by tag" recette --set image.digest=latest
-refused "restored state in review" review --set state.filestore=x
-refused "db-init Job in review" review --set jobs.dbInit.run=true
+refused "several instances on a ReadWriteOnce filestore" production --set odoo.replicas=2
+refused "filestore PVC without VolumeSnapshotClass outside review" recette \
+    --set restorePoints.volumeSnapshotClass=
+refused "no restore point kept" production --set restorePoints.keep=0
 
 # 5. No destructive command in any render; reviews only reset through their volumes
 if grep -nEw 'dropdb|rm' "$work"/*.yaml || grep -nE 'DROP DATABASE|--force' "$work"/*.yaml; then
@@ -126,19 +140,99 @@ if grep -nEw 'dropdb|rm' "$work"/*.yaml || grep -nE 'DROP DATABASE|--force' "$wo
 else
     pass "no dropdb, DROP DATABASE, rm or --force in any render"
 fi
+# shellcheck disable=SC2016 # $ODOO_INIT_ADMIN_PASSWORD is expanded by the shell of the Job
+db_init_without_demo() { # db_init_without_demo <render>
+    local migrate
+    migrate="$(doc "$work/$1.yaml" Job odoo-migrate)"
+    has "$migrate" 'odoo db init --password "$ODOO_INIT_ADMIN_PASSWORD"' &&
+        lacks "$migrate" with-demo && has "$migrate" "key: admin-user-password"
+}
+no_digest_volume() { ! grep -qE "(claimName: |name: ).*-(pgdata|odoo-data)-$short" "$work/$1.yaml"; }
 for env in recette production; do
-    if grep -q 'name: db-init' "$work/$env.yaml" ||
-        grep -qE "(claimName: |name: ).*-(pgdata|odoo-data)-$short" "$work/$env.yaml"; then
-        fail "$env: db-init step or volume named after the digest"
-    else
-        pass "$env: no db-init step, no volume named after the digest"
-    fi
+    for render in "$env" "$env-upgrade"; do
+        check "$render: db-init without demo, admin password of the application Secret" \
+            db_init_without_demo "$render"
+        check "$render: no volume named after the digest" no_digest_volume "$render"
+    done
 done
-if grep -q 'name: db-init' "$work/review.yaml" && grep -q "pgdata-$short" "$work/review.yaml"; then
-    pass "review: db-init step and volumes named after the digest"
-else
-    fail "review: db-init step or digest volumes missing"
-fi
+review_resets() {
+    has "$(doc "$work/review.yaml" Job pr-1-migrate)" "init --with-demo" &&
+        grep -q "pgdata-$short" "$work/review.yaml" && grep -q "odoo-data-$short" "$work/review.yaml"
+}
+check "review: db-init with the demo data and volumes named after the digest" review_resets
+
+# 6. Hooks of each case (§3.2)
+weight_of() { doc "$1" Job "$2" | sed -n 's/^    helm.sh\/hook-weight: //p'; } # weight_of <file> <job>
+first_install_hooks() { # first_install_hooks <env>
+    equals "$(hook_of "$work/$1.yaml" odoo-migrate)" post-install &&
+        ! grep -q "name: odoo-stop-snapshot$" "$work/$1.yaml"
+}
+update_hooks() { # update_hooks <env>
+    local file="$work/$1-upgrade.yaml"
+    equals "$(hook_of "$file" odoo-stop-snapshot)/$(weight_of "$file" odoo-stop-snapshot)" 'pre-upgrade/"-5"' &&
+        equals "$(hook_of "$file" odoo-migrate)/$(weight_of "$file" odoo-migrate)" 'pre-upgrade/"0"' &&
+        equals "$(hook_of "$file" odoo-validate)" post-upgrade
+}
+check "review: migrate in post-install,post-upgrade" \
+    equals "$(hook_of "$work/review.yaml" pr-1-migrate)" post-install,post-upgrade
+check "review: no stop-snapshot, validate nor hooks account" \
+    fails grep -qE "name: pr-1-(stop-snapshot|validate|hooks)$" "$work/review.yaml"
+for env in recette production; do
+    check "$env, first installation: migrate in post-install, no stop-snapshot" \
+        first_install_hooks "$env"
+    check "$env, update: stop-snapshot (-5) then migrate (0) in pre-upgrade, validate in post-upgrade" \
+        update_hooks "$env"
+done
+check "first installation: migrate on the node of the Odoo pod (RWO volume)" \
+    has "$(doc "$work/recette.yaml" Job odoo-migrate)" podAffinity
+check "update: migrate without affinity (Odoo stopped)" \
+    lacks "$(doc "$work/recette-upgrade.yaml" Job odoo-migrate)" podAffinity
+check "Odoo waits for its database (init container wait-db)" \
+    has "$(doc "$work/recette.yaml" Deployment odoo)" "module_auto_update.installed_checksums"
+
+# 7. Account of the hooks (§6.4): only its resources and verbs
+cat >"$work/role.expected" <<'ROLE'
+  - {apiGroups: [apps], resources: [deployments], verbs: [get, list]}
+  - {apiGroups: [apps], resources: [deployments/scale], verbs: [get, patch]}
+  - {apiGroups: [""], resources: [pods], verbs: [get, list, watch]}
+  - {apiGroups: [""], resources: [services], verbs: [get]}
+  - {apiGroups: [postgresql.cnpg.io], resources: [clusters], verbs: [get, list, watch]}
+  - {apiGroups: [postgresql.cnpg.io], resources: [backups], verbs: [create, get, list, watch, patch, delete]}
+  - {apiGroups: [snapshot.storage.k8s.io], resources: [volumesnapshots], verbs: [create, get, list, watch]}
+ROLE
+check "Role of the hooks: only the verbs of §6.4" \
+    diff -u "$work/role.expected" <(doc "$work/production-upgrade.yaml" Role odoo-hooks | grep '^  - {')
+snapshot="$(doc "$work/production-upgrade.yaml" Job odoo-stop-snapshot)"
+owned_by_backup() {
+    # shellcheck disable=SC2016 # $uid is expanded by the shell of the Job
+    has "$snapshot" 'uid: $uid' && lacks "$snapshot" blockOwnerDeletion
+}
+check "filestore snapshot owned by its Backup (UID), without blockOwnerDeletion" owned_by_backup
+check "hook Jobs: no automatic token" has "$snapshot" "automountServiceAccountToken: false"
+check "hook Jobs: token mounted in the two kubectl containers only" \
+    equals "$(grep -c "name: kube-api-access, mountPath" <<<"$snapshot")" 2
+
+# 8. Filestore modes (§3.4)
+render production --is-upgrade --set odoo.persistence.enabled=false --set odoo.replicas=3 \
+    --set restorePoints.volumeSnapshotClass= >"$work/nopvc.yaml"
+render production --set odoo.persistence.accessMode=ReadWriteMany --set odoo.replicas=3 >"$work/rwx.yaml"
+render production --set odoo.persistence.existingClaim=restored-fs >"$work/claim.yaml"
+no_pvc() {
+    ! grep -q "kind: PersistentVolumeClaim" "$work/nopvc.yaml" &&
+        lacks "$(doc "$work/nopvc.yaml" Job odoo-stop-snapshot)" "kind: VolumeSnapshot" &&
+        has "$(doc "$work/nopvc.yaml" Deployment odoo)" "replicas: 3"
+}
+shared_pvc() {
+    grep -q "accessModes: \[ReadWriteMany\]" "$work/rwx.yaml" &&
+        lacks "$(doc "$work/rwx.yaml" Job odoo-migrate)" podAffinity
+}
+existing_claim() {
+    ! grep -q "kind: PersistentVolumeClaim" "$work/claim.yaml" &&
+        grep -q "claimName: restored-fs" "$work/claim.yaml"
+}
+check "no PVC: no volume, /var/lib/odoo on an emptyDir, restore point = the Backup only" no_pvc
+check "shared filestore: ReadWriteMany volume, 3 instances, no affinity" shared_pvc
+check "existing claim: no PVC rendered, Odoo on restored-fs" existing_claim
 
 {
     echo "### Chart Helm"

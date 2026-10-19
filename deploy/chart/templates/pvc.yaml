@@ -1,8 +1,10 @@
 {{- /*
-Filestore and sessions (/var/lib/odoo). Review: named after the digest, a new image gets a
-new volume and Helm deletes the old one. Recette/prod: named after the generation, kept by
-Helm, created from a VolumeSnapshot on a rollback (§3.3).
+Filestore and sessions (/var/lib/odoo), §3.4. Review: named after the digest, a new image
+gets a new volume and Helm deletes the old one. Recette/prod: kept by Helm; a manual
+restoration of the filestore uses odoo.persistence.existingClaim instead.
 */ -}}
+{{- $p := .Values.odoo.persistence }}
+{{- if and $p.enabled (not $p.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -15,16 +17,11 @@ metadata:
     helm.sh/resource-policy: keep
   {{- end }}
 spec:
-  accessModes: [ReadWriteOnce]
-  {{- with .Values.odoo.persistence.storageClass }}
+  accessModes: [{{ $p.accessMode }}]
+  {{- with $p.storageClass }}
   storageClassName: {{ . }}
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.odoo.persistence.size }}
-  {{- with .Values.state.filestore }}
-  dataSource:
-    name: {{ . }}
-    kind: VolumeSnapshot
-    apiGroup: snapshot.storage.k8s.io
-  {{- end }}
+      storage: {{ $p.size }}
+{{- end }}

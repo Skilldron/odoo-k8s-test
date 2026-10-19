@@ -11,13 +11,30 @@
 {{- if eq .Values.environment "review" }}true{{ end }}
 {{- end }}
 
-{{/* Review volumes carry the digest (reset on a new image), the others the generation */}}
+{{/* Filestore volume: review volumes carry the digest (reset on a new image) */}}
 {{- define "odoo.dataClaim" -}}
-{{- if include "odoo.review" . -}}
+{{- if .Values.odoo.persistence.existingClaim -}}
+{{ .Values.odoo.persistence.existingClaim }}
+{{- else if include "odoo.review" . -}}
 {{ .Release.Name }}-odoo-data-{{ include "odoo.shortDigest" . }}
 {{- else -}}
-{{ .Release.Name }}-odoo-data-{{ .Values.state.generation }}
+{{ .Release.Name }}-odoo-data
 {{- end }}
+{{- end }}
+
+{{/* Restore points (recette, production) */}}
+{{- define "odoo.restorePoints" -}}
+{{- if not (include "odoo.review" .) }}true{{ end }}
+{{- end }}
+
+{{/* ConfigMap of the hook Jobs: same content, created before them (§6.1) */}}
+{{- define "odoo.hookConfig" -}}
+{{ .Release.Name }}-odoo-conf-hook
+{{- end }}
+
+{{/* Stable Service of the database (first label of database.external.host) */}}
+{{- define "odoo.dbService" -}}
+{{ .Values.database.external.host | splitList "." | first }}
 {{- end }}
 
 {{- define "odoo.pgdataClaim" -}}
@@ -62,7 +79,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{ include "odoo.selectorLabels" . }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
-odoo.dev/environment: {{ .Values.environment }}
+{{ .Values.labelPrefix }}/environment: {{ .Values.environment }}
 {{- end }}
 
 {{/* odoo.conf values: lists joined by commas, booleans as True/False, whole numbers as integers */}}
@@ -137,14 +154,24 @@ smtp_port = 1025
 {{- if and (ne $v.environment "review") (not $v.secrets.existingSecret) -}}
 {{- fail "secrets.existingSecret is required outside review" -}}
 {{- end -}}
-{{- if and (eq $v.environment "review") (or $v.state.filestore $v.state.databaseSecret $v.jobs.dbInit.run) -}}
-{{- fail "state and jobs.dbInit are not used in review" -}}
+{{- $p := $v.odoo.persistence -}}
+{{- if and (gt (int $v.odoo.replicas) 1) $p.enabled (eq $p.accessMode "ReadWriteOnce") -}}
+{{- fail "odoo.replicas > 1 needs a shared filestore: odoo.persistence.accessMode=ReadWriteMany, or odoo.persistence.enabled=false with the filestore on S3" -}}
+{{- end -}}
+{{- if and (include "odoo.restorePoints" .) $p.enabled (not $v.restorePoints.volumeSnapshotClass) -}}
+{{- fail "restorePoints.volumeSnapshotClass is required for the filestore snapshot outside review (or odoo.persistence.enabled=false)" -}}
+{{- end -}}
+{{- if lt (int $v.restorePoints.keep) 1 -}}
+{{- fail "restorePoints.keep must be at least 1" -}}
 {{- end -}}
 {{- if not (has $v.database.type (list "ephemeral" "external")) -}}
 {{- fail "database.type must be ephemeral or external" -}}
 {{- end -}}
 {{- if and (eq $v.database.type "external") (not $v.database.external.secret) -}}
 {{- fail "database.external.secret is required with database.type=external" -}}
+{{- end -}}
+{{- if and (eq $v.database.type "external") (not $v.database.external.host) -}}
+{{- fail "database.external.host (stable Service of the CNPG cluster) is required with database.type=external" -}}
 {{- end -}}
 {{- if $v.route.parentRefs -}}
 {{- if and (eq $v.environment "review") (not $v.route.reviewDomain) -}}
@@ -214,11 +241,14 @@ capabilities:
   valueFrom:
     secretKeyRef: {name: {{ include "odoo.generatedSecret" . }}, key: pg-password}
 {{- else }}
-{{- $secret := .Values.state.databaseSecret | default .Values.database.external.secret }}
-{{- range $env, $key := dict "PGHOST" "host" "PGPORT" "port" "PGUSER" "username" "PGPASSWORD" "password" }}
+- name: PGHOST
+  value: {{ .Values.database.external.host | quote }}
+- name: PGPORT
+  value: {{ .Values.database.external.port | quote }}
+{{- range $env, $key := dict "PGUSER" "username" "PGPASSWORD" "password" }}
 - name: {{ $env }}
   valueFrom:
-    secretKeyRef: {name: {{ $secret }}, key: {{ $key }}}
+    secretKeyRef: {name: {{ $.Values.database.external.secret }}, key: {{ $key }}}
 {{- end }}
 {{- end }}
 - name: PGDATABASE
@@ -244,24 +274,101 @@ capabilities:
 - {name: tmp, mountPath: /tmp}
 {{- end }}
 
-{{- define "odoo.volumes" -}}
+{{/* Volumes of Odoo (and of the migrate Job, with the hook ConfigMap): (list . "<ConfigMap>") */}}
+{{- define "odoo.volumesWith" -}}
+{{- $root := index . 0 -}}
 - name: config
-  configMap: {name: {{ .Release.Name }}-config}
+  configMap: {name: {{ index . 1 }}}
 - name: data
-  persistentVolumeClaim: {claimName: {{ include "odoo.dataClaim" . }}}
+  {{- if $root.Values.odoo.persistence.enabled }}
+  persistentVolumeClaim: {claimName: {{ include "odoo.dataClaim" $root }}}
+  {{- else }}
+  emptyDir: {}
+  {{- end }}
 - name: tmp
   emptyDir: {}
 {{- end }}
 
+{{- define "odoo.volumes" -}}
+{{ include "odoo.volumesWith" (list . (printf "%s-config" .Release.Name)) }}
+{{- end }}
+
+{{/* Pod settings; (list . "<ServiceAccount>") for the hook Jobs of the hooks account */}}
 {{- define "odoo.podCommon" -}}
-serviceAccountName: {{ .Release.Name }}
+{{- $root := . }}
+{{- $account := "" }}
+{{- if kindIs "slice" . }}
+{{- $root = index . 0 }}
+{{- $account = index . 1 }}
+{{- end -}}
+serviceAccountName: {{ $account | default $root.Release.Name }}
 automountServiceAccountToken: false
 securityContext:
-  {{- include "odoo.podSecurityContext" . | nindent 2 }}
-{{- with .Values.image.pullSecrets }}
+  {{- include "odoo.podSecurityContext" $root | nindent 2 }}
+{{- with $root.Values.image.pullSecrets }}
 imagePullSecrets:
   {{- range . }}
   - name: {{ . }}
   {{- end }}
 {{- end }}
+{{- end }}
+
+{{/* Hooks of the chart (§3.2): annotations, given the events and the weight */}}
+{{- define "odoo.hook" -}}
+helm.sh/hook: {{ index . 0 }}
+helm.sh/hook-weight: {{ index . 1 | quote }}
+helm.sh/hook-delete-policy: before-hook-creation
+{{- end }}
+
+{{/* Containers of the stop-snapshot and validate Jobs: sh and kubectl (§6.4) */}}
+{{- define "odoo.kubectlContainer" -}}
+image: {{ .Values.restorePoints.image }}
+command: [sh, -euc]
+resources:
+  {{- toYaml .Values.restorePoints.resources | nindent 2 }}
+securityContext:
+  runAsUser: 65532
+  runAsGroup: 65532
+  {{- include "odoo.containerSecurityContext" . | nindent 2 }}
+volumeMounts:
+  - {name: tmp, mountPath: /tmp}
+  - {name: kube-api-access, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+{{- end }}
+
+{{- define "odoo.kubectlEnv" -}}
+- {name: HOME, value: /tmp}
+- {name: REL, value: {{ .Release.Name | quote }}}
+- {name: P, value: {{ .Values.labelPrefix | quote }}}
+{{- end }}
+
+{{/* Token of the hooks account, mounted in the kubectl containers only */}}
+{{- define "odoo.kubeApiAccess" -}}
+- name: kube-api-access
+  projected:
+    sources:
+      - serviceAccountToken: {path: token, expirationSeconds: 3600}
+      - configMap: {name: kube-root-ca.crt, items: [{key: ca.crt, path: ca.crt}]}
+      - downwardAPI: {items: [{path: namespace, fieldRef: {fieldPath: metadata.namespace}}]}
+{{- end }}
+
+{{/* Label selector of the restore points of the release, for kubectl */}}
+{{- define "odoo.pointSelector" -}}
+app.kubernetes.io/instance={{ .Release.Name }},{{ .Values.labelPrefix }}/backup-type=pre-upgrade
+{{- end }}
+
+{{/* Shell function "points <state>": "<name> <phase> <filestore snapshot>" per Backup of
+the release in that state, oldest first; "complete <phase> <filestore>": the Backup is
+completed and its filestore snapshot, if any, ready to use (§3.3) */}}
+{{- define "odoo.pointFunctions" -}}
+{{- $escaped := .Values.labelPrefix | replace "." "\\." -}}
+points() {
+  kubectl get backups.postgresql.cnpg.io --sort-by=.metadata.creationTimestamp \
+    -l "{{ include "odoo.pointSelector" . }},$P/upgrade-state in ($1)" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{" "}{.metadata.annotations.{{ $escaped }}/filestore}{"\n"}{end}'
+}
+complete() {
+  [ "$1" = completed ] || return 1
+  [ -z "${2:-}" ] && return 0
+  [ "$(kubectl get volumesnapshots.snapshot.storage.k8s.io "$2" -o jsonpath='{.status.readyToUse}' 2>/dev/null)" = true ]
+}
 {{- end }}

@@ -1,12 +1,16 @@
 # Defaults shared by every environment. deploy/values/<env>.yaml overrides them; the CI
-# only adds image.digest, the step settings (odoo.replicas, jobs.*.run) and the state of
-# the environment (state). See docs/plans/k8s-deployment.md §6.
+# only adds image.digest. See docs/plans/k8s-deployment.md §6.
 
 # review | recette | production (required)
 environment: ""
 
 # Project name: prefix of the review hosts (<project>-<release>.<route.reviewDomain>)
 project: odoo
+
+# Prefix of the labels and annotations of the chart (environment, image digest, restore
+# points): a domain of the chart's owner. Changing it on a running environment hides its
+# existing restore points from the chart.
+labelPrefix: odoo.haroldd.dev
 
 image:
   repository: ghcr.io/owner/repo/builds
@@ -16,8 +20,9 @@ image:
   pullSecrets: []
 
 odoo:
-  # 0 or 1, set by ci/deploy.sh at each step
-  replicas: 0
+  # Odoo instances. More than one needs a shared filestore: persistence.accessMode
+  # ReadWriteMany, or no PVC with the filestore on S3 (§3.4).
+  replicas: 1
   # Modules installed by the migrate Job (odoo -i). ci/chart-lint.sh checks that the list
   # matches the folders of addons/.
   modules: [dev_sample]
@@ -34,25 +39,32 @@ odoo:
       limit_memory_hard: 2684354560
       limit_time_cpu: 600
       limit_time_real: 1200
+  # Filestore and sessions (/var/lib/odoo), §3.4:
+  #   1. one instance: enabled, ReadWriteOnce (default)
+  #   2. several instances: enabled, ReadWriteMany (RWX storage class)
+  #   3. several instances: disabled, filestore on S3 (fs_attachment-like module) and
+  #      sessions in the database or Redis; /var/lib/odoo is then an emptyDir
   persistence:
+    enabled: true
+    accessMode: ReadWriteOnce
     storageClass: ""
     size: 5Gi
+    # Existing PVC instead of the one of the chart (manual restoration of the filestore
+    # from the snapshot of a restore point)
+    existingClaim: ""
   resources:
     requests: {cpu: 250m, memory: 1Gi}
     limits: {memory: 3Gi}
+  # Init container wait-db: waits until click-odoo-update has recorded the checksums of
+  # the modules (end of the first migrate Job)
+  waitDb:
+    resources:
+      requests: {cpu: 10m, memory: 32Mi}
+      limits: {memory: 128Mi}
 
 jobs:
   migrate:
-    # Rendered only when true (ci/deploy.sh, step 4)
-    run: false
     activeDeadlineSeconds: 1800
-    ttlSecondsAfterFinished: 604800
-  # Recette, production: odoo db init creates Odoo's database with the admin password of
-  # the application Secret, and refuses an existing one. Run by ci/deploy.sh until
-  # state.initialized (review: first step of the migrate Job, with the demo data).
-  dbInit:
-    run: false
-    activeDeadlineSeconds: 600
 
 secrets:
   # Application Secret (keys admin-passwd, admin-user-password for the first deployment,
@@ -64,7 +76,7 @@ secrets:
 
 database:
   # ephemeral (review only, created by this chart) | external (recette, production: a
-  # database installed apart, e.g. with the CloudNativePG "cluster" chart)
+  # CloudNativePG cluster installed apart, behind a stable Service)
   type: external
   # Name of Odoo's database, created by odoo db init (migrate Job)
   name: odoo
@@ -76,31 +88,32 @@ database:
       requests: {cpu: 100m, memory: 256Mi}
       limits: {memory: 1Gi}
   external:
-    # Secret with the keys host, port, username, password: the <cluster>-app Secret of
-    # CNPG, or a Secret created with the same keys for another database. Its role needs
-    # CREATEDB: Odoo creates its database (database.name) at the first deployment.
+    # Stable Service in front of the primary of the active CNPG cluster, in the namespace
+    # of the release (selector cnpg.io/cluster and cnpg.io/instanceRole: primary). The
+    # restore points read the active cluster in its selector.
+    host: ""
+    port: 5432
+    # Secret with the keys username and password (odoo-db-credentials with CNPG). The
+    # role needs CREATEDB: Odoo creates its database at the first deployment.
     secret: ""
-    # Name of the CNPG Cluster, when the database is one: ci/deploy.sh then takes a
-    # database restore point before each update. Not used by the templates.
-    cnpgCluster: ""
 
-snapshots:
-  # VolumeSnapshotClass of the filestore restore points (used by ci/deploy.sh)
+# Restore points of the updates (recette, production; §3.3, §6.4): cold CNPG Backup of
+# the database and VolumeSnapshot of the filestore, owned by the Backup
+restorePoints:
+  # Restore points kept among the validated and restored ones (at least 1)
+  keep: 3
+  # VolumeSnapshotClass of the filestore snapshot (deletionPolicy: Delete), required with
+  # a PVC; the database snapshot uses the class of the CNPG Cluster
   volumeSnapshotClass: ""
-
-# State of a recette or production environment, written by ci/deploy.sh and
-# ci/deploy-rollback.sh, read back from the release and carried over by every deployment.
-# Never set in deploy/values/<env>.yaml.
-state:
-  # Odoo's database exists (odoo db init done)
-  initialized: false
-  # Suffix of the filestore volume, increased by a restoration (§3.3)
-  generation: 1
-  # VolumeSnapshot the current filestore volume was created from
-  filestore: ""
-  # Database restored by the runbook: its Secret and CNPG Cluster replace database.external
-  databaseSecret: ""
-  cnpgCluster: ""
+  # Delay for the Backup and the filestore snapshot to be ready
+  timeoutSeconds: 900
+  # Image of the stop-snapshot and validate Jobs: sh and kubectl. Chainguard only
+  # publishes latest and latest-dev for free: the digest is checked at every version of
+  # the chart, and the value can point to a copy in the project registry.
+  image: cgr.dev/chainguard/kubectl:latest-dev@sha256:63e7072e580dad3a8b9740e76594bb19156f81173f525d6b3765db58eb629704
+  resources:
+    requests: {cpu: 10m, memory: 64Mi}
+    limits: {memory: 256Mi}
 
 mailpit:
   enabled: false
