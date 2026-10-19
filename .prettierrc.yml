@@ -1,4 +1,4 @@
-# Aligné sur la configuration OCA. Utilisé par pre-commit et l'extension VS Code Prettier.
+# Aligned with the OCA configuration. Used by pre-commit and the VS Code Prettier extension.
 plugins:
   - "@prettier/plugin-xml"
 bracketSpacing: false

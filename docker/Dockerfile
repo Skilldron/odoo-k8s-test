@@ -1,11 +1,10 @@
-# Official Odoo 20.0 Community
-# user odoo uid 1000
-# builder stage : installs requirements.txt (OCA addons from git need git, kept out of the image)
-# dev stage for : developper tools (debugpy, ruff, pylint-odoo, pre-commit, node)
-# prod stage : the deployed image (addons + vendor), configured at runtime ; test : prod + coverage
+# Odoo 20.0 Community, from the official image (user odoo, uid 1000).
+# builder: installs requirements.txt (OCA addons from git need git, kept out of the image)
+# dev: developer tools (debugpy, ruff, pylint-odoo, pre-commit, node)
+# prod: the deployed image (addons + vendor), configured at runtime; test: prod + coverage
 
 
-# Update Odoo : update the tag and add the digest (optionnal but recommanded) (docker buildx imagetools inspect odoo:20.0)
+# Update Odoo: change the dated tag and its digest (docker buildx imagetools inspect odoo:20.0)
 
 ARG ODOO_IMAGE=odoo:20.0-20260926@sha256:cdd83e8359b3e8c357895d476396c05021fed9975bf420f353bab25fcaed1533
 

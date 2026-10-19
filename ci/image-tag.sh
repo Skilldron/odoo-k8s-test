@@ -21,9 +21,9 @@ done
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
-        echo "### Image publiée"
+        echo "### Image published"
         echo
-        echo "Digest : \`$digest\`"
+        echo "Digest: \`$digest\`"
         echo
         # shellcheck disable=SC2016 # literal backticks (Markdown)
         printf -- '- `%s`\n' "$@"
