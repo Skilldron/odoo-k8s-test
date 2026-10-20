@@ -17,6 +17,8 @@ odoo:
       limit_memory_soft: 402653184
       limit_memory_hard: 503316480
   persistence:
+    # Longhorn: the default class local-path has no snapshots
+    storageClass: longhorn
     size: 5Gi
   resources:
     requests: {cpu: 250m, memory: 1Gi}
@@ -35,7 +37,7 @@ database:
 
 restorePoints:
   # deletionPolicy: Delete
-  volumeSnapshotClass: csi-snapclass
+  volumeSnapshotClass: longhorn-snap
 
 mailpit:
   enabled: true
@@ -43,11 +45,15 @@ mailpit:
 route:
   parentRefs:
     - {name: gateway, namespace: gateway-system}
-  host: preprod.example.com
-  mailpitHost: mail.preprod.example.com
+  host: preprod.odoo.k3s.haroldd.dev
+  mailpitHost: preprod-mail.odoo.k3s.haroldd.dev
 
 networkPolicy:
+  # Traefik, the Gateway of the cluster, runs in kube-system
   ingressFrom:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: gateway-system
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik

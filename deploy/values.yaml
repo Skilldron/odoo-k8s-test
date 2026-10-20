@@ -2,6 +2,13 @@
 # deploy/values/<environment>.yaml. The chart's defaults are those of the official odoo
 # image: keep these in step with the Dockerfile.
 
+# Prefix of the review app hosts
+project: odootest
+
+# Private packages: docker-registry Secret ghcr in every namespace
+image:
+  pullSecrets: [ghcr]
+
 # User odoo of the image: uid and gid 1000
 podSecurityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
 
