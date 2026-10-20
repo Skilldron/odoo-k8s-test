@@ -23,10 +23,14 @@ mailpit:
 route:
   parentRefs:
     - {name: gateway, namespace: gateway-system}
-  reviewDomain: review.example.com
+  reviewDomain: odoo.k3s.haroldd.dev
 
 networkPolicy:
+  # Traefik, the Gateway of the cluster, runs in kube-system
   ingressFrom:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: gateway-system
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik

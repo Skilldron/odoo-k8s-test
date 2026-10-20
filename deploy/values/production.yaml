@@ -22,6 +22,8 @@ odoo:
       smtp_user: odoo@example.com
       email_from: odoo@example.com
   persistence:
+    # Longhorn: the default class local-path has no snapshots
+    storageClass: longhorn
     size: 20Gi
   resources:
     requests: {cpu: 250m, memory: 1Gi}
@@ -40,15 +42,19 @@ database:
 
 restorePoints:
   # deletionPolicy: Delete
-  volumeSnapshotClass: csi-snapclass
+  volumeSnapshotClass: longhorn-snap
 
 route:
   parentRefs:
     - {name: gateway, namespace: gateway-system}
-  host: odoo.example.com
+  host: prod.odoo.k3s.haroldd.dev
 
 networkPolicy:
+  # Traefik, the Gateway of the cluster, runs in kube-system
   ingressFrom:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: gateway-system
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
