@@ -2,8 +2,17 @@
 # Helpers of ci/deploy.sh and ci/deploy-restore.sh (sourced). Globals set by the caller:
 # env (name of the environment), release, namespace, work (temporary directory),
 # repository and digest (the image, ci/deploy.sh). Env: EXTRA_VALUES, a values file added after those of the
-# environment (tests).
+# environment (tests); CHART, a local chart directory instead of the version of
+# deploy/chart.env.
 # shellcheck disable=SC2154 # those globals
+
+# shellcheck source=deploy/chart.env
+source deploy/chart.env
+if [ -n "${CHART:-}" ]; then
+    chart=("$CHART")
+else
+    chart=("$CHART_REF" --version "$CHART_VERSION")
+fi
 
 log() { echo "--- $*"; }
 
@@ -31,8 +40,8 @@ helm_odoo() { # helm_odoo [helm args...]: the chart with the values of the envir
     if [ -n "${EXTRA_VALUES:-}" ]; then
         extra=(-f "$EXTRA_VALUES")
     fi
-    helm upgrade --install "$release" deploy/chart -n "$namespace" \
-        -f "deploy/values/$env.yaml" ${extra[@]+"${extra[@]}"} \
+    helm upgrade --install "$release" "${chart[@]}" -n "$namespace" \
+        -f deploy/values.yaml -f "deploy/values/$env.yaml" ${extra[@]+"${extra[@]}"} \
         --set image.repository="$repository" --set image.digest="$digest" \
         --history-max 10 "$@"
 }
@@ -87,7 +96,7 @@ cnpg_ready() { # cnpg_ready <cluster>: ready, archiving its WAL, cold volume sna
         {className, online, snapshotOwnerReference}' <<<"$json")"
     [ "$(jq -r '.className != null and .online == false and .snapshotOwnerReference == "backup"' \
         <<<"$snapshot")" = true ] ||
-        fail "CNPG Cluster $cluster: spec.backup.volumeSnapshot is $snapshot, no restore point possible. Apply the patch of deploy/chart/examples/cnpg-cluster.values.yaml: kubectl -n $namespace patch cluster $cluster --type merge -p '{\"spec\":{\"backup\":{\"volumeSnapshot\":{\"className\":\"<VolumeSnapshotClass>\",\"online\":false,\"snapshotOwnerReference\":\"backup\"}}}}'"
+        fail "CNPG Cluster $cluster: spec.backup.volumeSnapshot is $snapshot, no restore point possible. Required by the Odoo chart (README, Database of a persistent instance): kubectl -n $namespace patch cluster $cluster --type merge -p '{\"spec\":{\"backup\":{\"volumeSnapshot\":{\"className\":\"<VolumeSnapshotClass>\",\"online\":false,\"snapshotOwnerReference\":\"backup\"}}}}'"
 }
 
 snapshot_class_deletes() { # snapshot_class_deletes <class>: deletionPolicy Delete, or the

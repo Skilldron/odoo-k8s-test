@@ -4,7 +4,7 @@ environment: review
 ephemeral: true
 
 odoo:
-  # Modules of addons/ (checked by ci/chart-lint.sh)
+  # Modules of addons/ (checked by ci/values-lint.sh)
   modules: [dev_sample]
   config:
     options:
@@ -12,9 +12,10 @@ odoo:
       max_cron_threads: 1
   persistence:
     size: 1Gi
+  # Little traffic: one threaded process
   resources:
     requests: {cpu: 100m, memory: 512Mi}
-    limits: {memory: 2Gi}
+    limits: {memory: 1Gi}
 
 mailpit:
   enabled: true

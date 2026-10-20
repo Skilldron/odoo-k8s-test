@@ -1,4 +1,2 @@
 # Purchased modules: formatted by their vendor, not by us (format on save included).
 vendor/
-# Templates Helm : les {{ }} ne sont pas du YAML valide avant rendu.
-deploy/chart/templates/

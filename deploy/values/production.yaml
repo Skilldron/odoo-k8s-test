@@ -4,12 +4,18 @@
 environment: production
 
 odoo:
-  # Modules of addons/ (checked by ci/chart-lint.sh)
+  # Modules of addons/ (checked by ci/values-lint.sh)
   modules: [dev_sample]
   config:
     options:
-      workers: 4
-      max_cron_threads: 2
+      # Sized for a small instance: raise workers with the traffic (about 6 users per
+      # worker, at most CPU x 2 + 1), and limits.memory with them. Each process
+      # (workers, cron, websocket) is recycled above limit_memory_soft and killed above
+      # limit_memory_hard: their sum stays under limits.memory.
+      workers: 2
+      max_cron_threads: 1
+      limit_memory_soft: 402653184
+      limit_memory_hard: 503316480
       smtp_server: smtp.example.com
       smtp_port: 587
       smtp_ssl: true
@@ -18,22 +24,22 @@ odoo:
   persistence:
     size: 20Gi
   resources:
-    requests: {cpu: 500m, memory: 2Gi}
-    limits: {memory: 4Gi}
+    requests: {cpu: 250m, memory: 1Gi}
+    limits: {memory: 2Gi}
 
 secrets:
   existingSecret: odoo-app
 
 database:
   external:
-    # Stable Service odoo-db (deploy/chart/examples/database-service.yaml) and the Secret of
-    # the declared role odoo (deploy/chart/examples/database-credentials.example.sh)
+    # Stable Service odoo-db and the Secret of the declared role odoo (chart README,
+    # Database of a persistent instance)
     host: odoo-db
     port: 5432
     secret: odoo-db-credentials
 
 restorePoints:
-  # deletionPolicy: Delete (deploy/chart/examples/longhorn-volumesnapshotclass.yaml)
+  # deletionPolicy: Delete
   volumeSnapshotClass: csi-snapclass
 
 route:

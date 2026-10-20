@@ -1,0 +1,12 @@
+# Values of every environment, those of the image (docker/Dockerfile), loaded before
+# deploy/values/<environment>.yaml. The chart's defaults are those of the official odoo
+# image: keep these in step with the Dockerfile.
+
+# User odoo of the image: uid and gid 1000
+podSecurityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+
+odoo:
+  config:
+    options:
+      # Project addons, then purchased modules (pip addons are found without a path)
+      addons_path: [/opt/odoo/addons, /opt/odoo/vendor]

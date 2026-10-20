@@ -5,28 +5,36 @@
 environment: preprod
 
 odoo:
-  # Modules of addons/ (checked by ci/chart-lint.sh)
+  # Modules of addons/ (checked by ci/values-lint.sh)
   modules: [dev_sample]
   config:
     options:
+      # Same process model as the production, sized for little traffic. Each process
+      # (workers, cron, websocket) is recycled above limit_memory_soft and killed above
+      # limit_memory_hard: their sum stays under limits.memory.
       workers: 2
       max_cron_threads: 1
+      limit_memory_soft: 402653184
+      limit_memory_hard: 503316480
   persistence:
     size: 5Gi
+  resources:
+    requests: {cpu: 250m, memory: 1Gi}
+    limits: {memory: 2Gi}
 
 secrets:
   existingSecret: odoo-app
 
 database:
   external:
-    # Stable Service odoo-db (deploy/chart/examples/database-service.yaml) and the Secret of
-    # the declared role odoo (deploy/chart/examples/database-credentials.example.sh)
+    # Stable Service odoo-db and the Secret of the declared role odoo (chart README,
+    # Database of a persistent instance)
     host: odoo-db
     port: 5432
     secret: odoo-db-credentials
 
 restorePoints:
-  # deletionPolicy: Delete (deploy/chart/examples/longhorn-volumesnapshotclass.yaml)
+  # deletionPolicy: Delete
   volumeSnapshotClass: csi-snapclass
 
 mailpit:

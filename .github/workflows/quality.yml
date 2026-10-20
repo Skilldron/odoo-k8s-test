@@ -1,5 +1,6 @@
 # Quality group (called by ci.yml): same pre-commit configuration as the git hook, and
-# the static checks of the Helm chart (ci/chart-lint.sh, no cluster).
+# the deployment values checked against the pinned Helm chart (ci/values-lint.sh, no
+# cluster).
 name: Quality
 
 on:
@@ -56,4 +57,4 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin"
           tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$RUNNER_TEMP/bin" kubeconform
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
-      - run: ci/chart-lint.sh
+      - run: ci/values-lint.sh

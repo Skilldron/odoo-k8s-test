@@ -49,7 +49,7 @@ addons/          project addons (dev_sample is a sample module, delete it)
 vendor/          purchased modules (Odoo Apps Store), unmodified
 ci/              CI scripts, runnable locally
 docker/          multi-stage Dockerfile, dev configuration, production configuration
-deploy/          Helm chart (deploy/chart), values per environment, CI access example
+deploy/          chart version (chart.env), values per environment, CI access example
 docs/            CI and production image, deployment, branching model
 requirements.txt        Python dependencies of the addons, OCA modules
 requirements-dev.txt    developer tooling (dev image only)
@@ -66,10 +66,11 @@ candidates and versions to the release package. The only promotion turns the las
 `X.Y.Z-rc.N`, once validated, into `X.Y.Z` (same image) when `vX.Y.Z` is tagged. Each
 environment configures the image with environment variables.
 
-This branch then deploys the image to Kubernetes with the Helm chart of
-[deploy/chart](deploy/chart/README.md): a review app for each pull request, staging for
-each release candidate, a preproduction mirror and the production. Deployments are
-enabled per environment by the repository variable `DEPLOY_ENVIRONMENTS`; see
+This branch then deploys the image to Kubernetes with the
+[Odoo Helm chart](https://github.com/Skilldron/odoo-helm-chart), pinned in
+`deploy/chart.env`: a review app for each pull request, staging for each release
+candidate, a preproduction mirror and the production. Deployments are enabled per
+environment by the repository variable `DEPLOY_ENVIRONMENTS`; see
 [docs/deployment.md](docs/deployment.md).
 
 - [docs/ci.md](docs/ci.md): pipeline, image tags, configuration variables.

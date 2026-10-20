@@ -2,15 +2,15 @@
 
 The CI (GitHub Actions, GitHub-hosted runners) checks the code, builds the **production
 image**, tests it and publishes it to GHCR. In this branch, it then **deploys** it to
-Kubernetes with the Helm chart of `deploy/chart` ([deployment.md](deployment.md)).
-Branching model: [gitflow.md](gitflow.md).
+Kubernetes with the [Odoo Helm chart](https://github.com/Skilldron/odoo-helm-chart)
+([deployment.md](deployment.md)). Branching model: [gitflow.md](gitflow.md).
 
 ## Pipeline
 
 Four groups of jobs (reusable workflows called by `.github/workflows/ci.yml`):
 
 ```
-Quality     quality.yml   lint (pre-commit), chart (ci/chart-lint.sh)
+Quality     quality.yml   lint (pre-commit), chart (ci/values-lint.sh)
 Image       image.yml     plan ─► base ─► build ─┬─► tests ─┐
                                                  └─► smoke ─┴─► publish
                           (pull request from a fork: a single "local" job, nothing published)
@@ -19,16 +19,16 @@ Deployment  deploy.yml    deploy ─► restore (when deploy fails, persistent e
                           called by the review, staging, preprod and production jobs
 ```
 
-| Job       | Role                                                                                            |
-| --------- | ----------------------------------------------------------------------------------------------- |
-| `plan`    | Tags to publish for the event; refuses a `release/` or `hotfix/` branch that is not `X.Y.Z`     |
-| `base`    | Publishes `base:<key>` when it does not exist yet (about once a week)                           |
-| `build`   | Builds only the modules on top of `base:<key>`, pushes `builds:run-<id>` (+ `-test`)            |
-| `tests`   | Tests of the `addons/` modules + coverage, on the image pulled from the registry                |
-| `smoke`   | Production image, read-only, no capabilities: `/web/health`, `/web/login`, non-root uid         |
-| `publish` | After the tests **and** the smoke test: adds the readable tags (same digest); output `digest`   |
-| `promote` | On a git tag: promotes the last release candidate; output `digest`                              |
-| `chart`   | Static checks of the Helm chart, no cluster (`ci/chart-lint.sh`, pinned Helm 4 and kubeconform) |
+| Job       | Role                                                                                                        |
+| --------- | ----------------------------------------------------------------------------------------------------------- |
+| `plan`    | Tags to publish for the event; refuses a `release/` or `hotfix/` branch that is not `X.Y.Z`                 |
+| `base`    | Publishes `base:<key>` when it does not exist yet (about once a week)                                       |
+| `build`   | Builds only the modules on top of `base:<key>`, pushes `builds:run-<id>` (+ `-test`)                        |
+| `tests`   | Tests of the `addons/` modules + coverage, on the image pulled from the registry                            |
+| `smoke`   | Production image, read-only, no capabilities: `/web/health`, `/web/login`, non-root uid                     |
+| `publish` | After the tests **and** the smoke test: adds the readable tags (same digest); output `digest`               |
+| `promote` | On a git tag: promotes the last release candidate; output `digest`                                          |
+| `chart`   | Deployment values against the pinned chart, no cluster (`ci/values-lint.sh`, pinned Helm 4 and kubeconform) |
 
 Other workflows:
 
@@ -150,7 +150,7 @@ Each job is a thin layer over these scripts, which run the same way locally:
 | `ci/registry-tags.py IMAGE`     | Lists the tags of an image repository (OCI API)                                |
 | `ci/ghcr-prune.sh PACKAGE RULE` | Cleans up a GHCR package (`tag:<tag>` or `keep:<n>[:<regex>]`)                 |
 | `ci/odoo-image-latest.sh`       | New digest of the official Odoo image, if any                                  |
-| `ci/chart-lint.sh`              | Static checks of the Helm chart                                                |
+| `ci/values-lint.sh`             | Deployment values against the pinned chart, modules against `addons/`          |
 | `ci/chart-e2e.sh`               | Deployment scenarios on kind (local, not in CI)                                |
 | `ci/deploy.sh`                  | Deploys an image to an environment                                             |
 | `ci/deploy-restore.sh`          | Restores after a failed update                                                 |

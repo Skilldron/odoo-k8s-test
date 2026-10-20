@@ -1,0 +1,12 @@
+# Fixture of ci/chart-e2e.sh: stable Service of the database (database.external.host),
+# outside any Helm release, switched to the restored cluster by ci/deploy-restore.sh.
+apiVersion: v1
+kind: Service
+metadata:
+  name: odoo-db
+spec:
+  selector:
+    cnpg.io/cluster: odoo-db
+    cnpg.io/instanceRole: primary
+  ports:
+    - {name: postgres, port: 5432, targetPort: 5432}

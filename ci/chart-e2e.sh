@@ -3,8 +3,8 @@
 # local registry (real image digests), snapshot-controller, csi-driver-host-path,
 # cert-manager, CNPG with the Barman Cloud plugin, the Gateway API CRDs and MinIO. This is
 # not a reference cluster installation. The staging database is installed apart, as an
-# administrator would, with the CNPG "cluster" chart and deploy/chart/examples (declared role,
-# stable Service, volumeSnapshot patch).
+# administrator would, with the CNPG "cluster" chart and the fixtures of ci/e2e (declared
+# role, stable Service, NetworkPolicy), then the volumeSnapshot patch.
 #
 # Builds three variants of the prod image (dev_sample with a new field, the same with a
 # broken view, a fix) and deploys them with ci/deploy.sh and ci/deploy-restore.sh: review
@@ -18,12 +18,16 @@
 # Uses its own kubeconfig and Helm home: the current kubectl context and Helm repositories
 # are never touched.
 # Usage: ci/chart-e2e.sh <prod-image>
-# Env: E2E_CLUSTER (odoo-e2e), E2E_REGISTRY_PORT (5001), KEEP_CLUSTER=1 to keep the
-#      cluster and the registry, KIND (kind binary).
+# Env: CHART_SOURCE, a checkout of the chart repository (default: the version of
+#      deploy/chart.env, cloned from GitHub), E2E_CLUSTER (odoo-e2e), E2E_REGISTRY_PORT
+#      (5001), KEEP_CLUSTER=1 to keep the cluster and the registry, KIND (kind binary).
 set -euo pipefail
+[ -z "${CHART_SOURCE:-}" ] || CHART_SOURCE="$(cd "$CHART_SOURCE" && pwd)"
 cd "$(dirname "$0")/.."
 # shellcheck source=ci/lib.sh
 source ci/lib.sh
+# shellcheck source=deploy/chart.env
+source deploy/chart.env
 
 image="${1:?usage: ci/chart-e2e.sh <prod-image>}"
 cluster="${E2E_CLUSTER:-odoo-e2e}"
@@ -52,6 +56,14 @@ export HELM_CACHE_HOME="$work/helm/cache" HELM_CONFIG_HOME="$work/helm/config" \
     HELM_DATA_HOME="$work/helm/data"
 failures=0
 results=()
+
+# The chart (CHART, also read by the CI scripts)
+if [ -z "${CHART_SOURCE:-}" ]; then
+    CHART_SOURCE="$work/chart-source"
+    git clone -q --depth 1 --branch "v$CHART_VERSION" \
+        https://github.com/Skilldron/odoo-helm-chart "$CHART_SOURCE"
+fi
+export CHART="$CHART_SOURCE/charts/odoo"
 
 cleanup() {
     if [ "${KEEP_CLUSTER:-}" = 1 ]; then
@@ -198,11 +210,14 @@ EOF
         --serviceaccount=e2e-review:odoo-deploy --serviceaccount=e2e-staging:odoo-deploy >/dev/null
     # Staging prerequisites: application Secret, credentials of the declared role
     # odoo, S3 credentials of the database, stable Service
-    deploy/chart/examples/app-secret.example.sh e2e-staging >/dev/null
-    deploy/chart/examples/database-credentials.example.sh e2e-staging >/dev/null
+    kubectl -n e2e-staging create secret generic odoo-app \
+        --from-literal=admin-passwd="$(openssl rand -hex 24)" \
+        --from-literal=admin-user-password="$(openssl rand -hex 16)" >/dev/null
+    kubectl -n e2e-staging create secret generic odoo-db-credentials --type=kubernetes.io/basic-auth \
+        --from-literal=username=odoo --from-literal=password="$(openssl rand -hex 24)" >/dev/null
     kubectl -n e2e-staging create secret generic odoo-db-s3 \
         --from-literal=ACCESS_KEY_ID=e2e --from-literal=ACCESS_SECRET_KEY=e2e-minio-password >/dev/null
-    kubectl -n e2e-staging apply -f deploy/chart/examples/database-service.yaml >/dev/null
+    kubectl -n e2e-staging apply -f ci/e2e/database-service.yaml >/dev/null
 }
 
 # The database of the staging, installed apart with the CNPG cluster chart (an
@@ -212,7 +227,7 @@ install_database() { # install_database <ns> <release> [helm args...]
     shift 2
     helm upgrade --install "$release" cluster --repo https://cloudnative-pg.github.io/charts \
         --version "$CNPG_CLUSTER_CHART_VERSION" -n "$ns" \
-        -f deploy/chart/examples/cnpg-cluster.values.yaml \
+        -f ci/e2e/cnpg-cluster.values.yaml \
         --set fullnameOverride="$release" --set cluster.storage.size=2Gi \
         --set cluster.storage.storageClass=csi-hostpath-sc \
         --set backups.endpointURL=http://minio.minio:9000 \
@@ -293,7 +308,7 @@ in_log() { grep -q -- "$1" "$work/ci.log"; }
 helm_raw() { # helm_raw <release> <env> <digest> [helm args...]: the chart without the
     # scripts, as an operator could run it (guards, injected failures); output in
     # $work/helm.log
-    helm upgrade --install "$1" deploy/chart -n "$ns" -f "deploy/values/$2.yaml" \
+    helm upgrade --install "$1" "$CHART" -n "$ns" -f deploy/values.yaml -f "deploy/values/$2.yaml" \
         -f "$work/kind-values.yaml" --set image.repository="$repo" --set image.digest="$3" \
         --timeout 20m "${@:4}" >"$work/helm.log" 2>&1
 }
@@ -529,7 +544,7 @@ check "staging: declared role odoo, CREATEDB, not superuser" \
 check "staging: pg_create_restore_point granted to odoo (database postgres)" \
     equals "$(kubectl -n $ns exec odoo-db-1 -c postgres -- psql -tAc \
         "select has_function_privilege('odoo', 'pg_create_restore_point(text)', 'execute')")" t
-kubectl -n $ns apply -f deploy/chart/examples/database-networkpolicy.yaml >/dev/null
+kubectl -n $ns apply -f ci/e2e/database-networkpolicy.yaml >/dev/null
 
 log "Staging: deployment refused without the volumeSnapshot patch, or with a Retain class"
 check "guard: database without volumeSnapshot section, deployment refused" \

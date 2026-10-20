@@ -1,17 +1,18 @@
 # Deployment on Kubernetes
 
-The CI deploys the tested image to Kubernetes with the Helm chart of
-[deploy/chart](../deploy/chart/README.md): a review app for each pull request, a staging
-instance for each release candidate, a preproduction mirror and the production. This
-page covers the project side: environments, setup, and day-to-day operations. The
-chart's own documentation covers its values, its update sequence and its
-[operations](../deploy/chart/docs/operations.md).
+The CI deploys the tested image to Kubernetes with the
+[Odoo Helm chart](https://github.com/Skilldron/odoo-helm-chart): a review app for each
+pull request, a staging instance for each release candidate, a preproduction mirror and
+the production. This page covers the project side: environments, setup, and day-to-day
+operations. The chart's own documentation covers its values, its update sequence and its
+[operations](https://github.com/Skilldron/odoo-helm-chart/blob/main/docs/operations.md).
 
 - [Environments](#environments)
 - [How a deployment runs](#how-a-deployment-runs)
 - [Setup](#setup)
 - [Refresh staging from production](#refresh-staging-from-production)
 - [Preproduction refreshed every night](#preproduction-refreshed-every-night)
+- [Upgrading the chart](#upgrading-the-chart)
 - [Rotating credentials](#rotating-credentials)
 
 ## Environments
@@ -39,7 +40,10 @@ before it.
 
 Each environment is a values file, `deploy/values/<environment>.yaml` (hosts, resources,
 Odoo options, Secret names), reviewed in pull requests like the code. No Odoo setting
-and no secret goes through the workflows.
+and no secret goes through the workflows. `deploy/values.yaml`, loaded before it, holds
+what depends on the image: its user (uid and gid 1000) and its addons directories. The
+chart's defaults are those of the official `odoo` image: keep this file in step with
+`docker/Dockerfile`.
 
 ## How a deployment runs
 
@@ -68,22 +72,25 @@ those missed (`cleanup.yml`).
 ## Setup
 
 Once per project. The cluster requirements (Gateway API, CSI snapshots, CloudNativePG…)
-are listed in the [chart documentation](../deploy/chart/README.md#requirements).
+are listed in the
+[chart documentation](https://github.com/Skilldron/odoo-helm-chart#requirements).
 
 1. **Namespaces**, one per environment, e.g. `acme-review`, `acme-staging`,
    `acme-preprod`, `acme-prod`.
-2. **Persistent environments** (staging, preprod, production), in each namespace:
-   - the database credentials, then the database cluster, its volume snapshot settings
-     and its stable Service ([chart install](../deploy/chart/README.md#install), steps 1
-     and 2); - the application Secret
-     ([app-secret.example.sh](../deploy/chart/examples/app-secret.example.sh), or
-     [External Secrets](../deploy/chart/examples/external-secret.example.yaml));
-   - once per cluster, the `VolumeSnapshotClass` of the restore points, with
-     `deletionPolicy: Delete`
-     ([Longhorn example](../deploy/chart/examples/longhorn-volumesnapshotclass.yaml)).
-3. **Registry Secret** in every namespace, to pull the private images from GHCR
-   ([registry-secret.sh](../deploy/chart/examples/registry-secret.sh)), and its name in
-   `image.pullSecrets` of the values files.
+2. **Persistent environments** (staging, preprod, production), in each namespace: the
+   database cluster, its stable Service and the application Secret, configured as the
+   chart requires
+   ([database](https://github.com/Skilldron/odoo-helm-chart#database-of-a-persistent-instance),
+   [application Secret](https://github.com/Skilldron/odoo-helm-chart#application-secret)),
+   and once per cluster the `VolumeSnapshotClass` of the restore points, with
+   `deletionPolicy: Delete`. The values files expect the Service `odoo-db`, the Secrets
+   `odoo-db-credentials` and `odoo-app`, and the class `csi-snapclass`: adapt them to
+   your names.
+3. **Registry Secret** in every namespace, of type `docker-registry`, to pull the
+   private images from GHCR, and its name in `image.pullSecrets` of the values files.
+   GHCR needs a classic personal access token with `read:packages` (fine-grained tokens
+   are not accepted), owned by a machine account that can read the packages; plan its
+   rotation.
 4. **CI access** in every namespace: a ServiceAccount limited to it, and its kubeconfig.
 
    ```sh
@@ -126,7 +133,7 @@ Staging keeps its data between releases, so that configuration tests can last se
 days. Refresh it from production on demand, when a test needs fresh data: recover the
 latest production backup into a new database cluster of the staging namespace, copy the
 filestore, switch the stable Service, then update staging with `neutralize=true`
-([procedure](../deploy/chart/docs/operations.md#copy-production-into-another-instance)).
+([procedure](https://github.com/Skilldron/odoo-helm-chart/blob/main/docs/operations.md#copy-production-into-another-instance)).
 The update hooks neutralize the copy (no outgoing mail, no scheduled actions, no calls
 to external services) before Odoo starts, then update its modules from the production
 version to the staging release candidate: the refresh also tests the real upgrade path.
@@ -150,6 +157,15 @@ read from one bucket and write to another; with a volume, a restore of the produ
 volume's backup taken to remote storage. When preprod or staging run in another
 namespace or cluster, every copy comes from the remote backup storage chosen for
 production.
+
+## Upgrading the chart
+
+The chart version is pinned in `deploy/chart.env` (`CHART_VERSION`), and its package is
+pulled from `oci://ghcr.io/skilldron/charts/odoo`. To upgrade, read the
+[release notes](https://github.com/Skilldron/odoo-helm-chart/releases), raise
+`CHART_VERSION` in a pull request, and adapt the values files if needed:
+`ci/values-lint.sh` (job `quality / chart`) renders every environment with the new
+version. The next deployment of each environment applies it.
 
 ## Rotating credentials
 

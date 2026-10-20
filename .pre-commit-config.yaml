@@ -1,13 +1,12 @@
 # Quality checks, run on commit (locally) and in CI (same configuration).
-# Lancer manuellement : pre-commit run --all-files
+# Run by hand: pre-commit run --all-files
 exclude: |
   (?x)
   ^node_modules/|
   ^vendor/|
   /static/lib/|
   /static/description/index\.html$|
-  \.svg$|
-  ^deploy/chart/templates/
+  \.svg$
 default_language_version:
   python: python3
   node: system

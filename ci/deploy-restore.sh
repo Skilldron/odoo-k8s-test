@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Restore job of the workflow, run only when the deploy job failed, persistent environments
-# (the manual procedure is in deploy/chart/docs/operations.md):
+# (the manual procedure is in docs/operations.md of the chart):
 #   - complete pending restore point of the release: new CNPG cluster <cluster>-r<revision>
 #     recovered from it (CNPG "cluster" chart, values of the active cluster, one
 #     instance), its volumeSnapshot section copied from the active cluster, the stable

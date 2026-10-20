@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploys an image to an environment with the chart of deploy/chart. The chart owns the
+# Deploys an image to an environment with the chart of deploy/chart.env. The chart owns the
 # update: its hooks stop Odoo, take the restore point, migrate the database, then
 # validate the point and purge the old ones. This script only:
 #   1. checks, before any downtime: server-side rendering, Secrets and their keys, the
