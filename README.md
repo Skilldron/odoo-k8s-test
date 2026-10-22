@@ -183,4 +183,5 @@ docker compose exec -T db psql -U odoo -d postgres < dump.sql
 
 Once the database is checked: `docker volume rm <project>_db-data`, and delete
 `dump.sql`.
+
 Review app test (phase 6).
