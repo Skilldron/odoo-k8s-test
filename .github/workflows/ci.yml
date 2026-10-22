@@ -59,6 +59,8 @@ jobs:
       group: deploy-review-pr-${{ github.event.number }}
       cancel-in-progress: false
     uses: ./.github/workflows/deploy.yml
+    # The secret KUBECONFIG of the job's environment, in deploy.yml
+    secrets: inherit
     with:
       environment: review
       digest: ${{ needs.image.outputs.digest }}
@@ -74,6 +76,8 @@ jobs:
       group: deploy-staging
       cancel-in-progress: false
     uses: ./.github/workflows/deploy.yml
+    # The secret KUBECONFIG of the job's environment, in deploy.yml
+    secrets: inherit
     with:
       environment: staging
       digest: ${{ needs.image.outputs.digest }}
@@ -85,6 +89,8 @@ jobs:
       group: deploy-production
       cancel-in-progress: false
     uses: ./.github/workflows/deploy.yml
+    # The secret KUBECONFIG of the job's environment, in deploy.yml
+    secrets: inherit
     with:
       environment: production
       digest: ${{ needs.promote.outputs.digest }}
@@ -102,6 +108,8 @@ jobs:
       group: deploy-preprod
       cancel-in-progress: false
     uses: ./.github/workflows/deploy.yml
+    # The secret KUBECONFIG of the job's environment, in deploy.yml
+    secrets: inherit
     with:
       environment: preprod
       digest: ${{ needs.promote.outputs.digest || needs.image.outputs.digest }}
