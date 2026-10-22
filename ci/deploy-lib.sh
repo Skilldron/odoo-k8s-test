@@ -34,8 +34,18 @@ release_status() { # status of the current release, "none" without release
     helm status "$release" -n "$namespace" -o json 2>/dev/null | jq -r '.info.status' || echo none
 }
 
+pull_chart() { # the pinned chart, pulled once into $work: helm install and upgrade of an
+    # OCI reference print "Pulled:" and "Digest:" on stdout, ahead of their -o json output
+    [ -z "${CHART:-}" ] && [ ! -d "$work/chart" ] || return 0
+    mkdir "$work/chart"
+    helm pull "$CHART_REF" --version "$CHART_VERSION" -d "$work/chart" >&2 ||
+        fail "chart $CHART_REF $CHART_VERSION not pulled"
+    chart=("$work"/chart/*.tgz)
+}
+
 helm_odoo() { # helm_odoo [helm args...]: the chart with the values of the environment and
     # the image
+    pull_chart
     local extra=()
     if [ -n "${EXTRA_VALUES:-}" ]; then
         extra=(-f "$EXTRA_VALUES")
