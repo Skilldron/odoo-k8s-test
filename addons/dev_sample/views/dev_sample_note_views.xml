@@ -9,7 +9,6 @@
                 <field name="deadline" />
                 <field name="done" />
                 <field name="priority" />
-                <field name="field_not_existing" />
                 <field name="is_late" column_invisible="True" />
             </list>
         </field>
