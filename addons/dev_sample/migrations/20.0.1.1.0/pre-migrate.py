@@ -1,2 +1,2 @@
 def migrate(cr, version):
-    raise Exception("Test: data migration failing on existing data")
+    raise RuntimeError("Test: data migration failing on existing data")
