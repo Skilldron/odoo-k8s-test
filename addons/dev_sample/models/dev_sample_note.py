@@ -11,6 +11,7 @@ class DevSampleNote(models.Model):
     deadline = fields.Date()
     done = fields.Boolean()
     is_late = fields.Boolean(compute="_compute_is_late")
+    priority = fields.Selection([("0", "Normal"), ("1", "High")], default="0")
 
     @api.depends("deadline", "done")
     def _compute_is_late(self):
