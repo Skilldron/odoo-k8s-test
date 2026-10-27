@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, lan]
     # helm --timeout is 60m (DEPLOY_TIMEOUT), plus preflight and smoke test
     timeout-minutes: 75
     environment:
@@ -65,7 +65,7 @@ jobs:
     needs: deploy
     # Persistent environments only: a review app has no restore point
     if: failure() && inputs.pr-number == ''
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, lan]
     timeout-minutes: 60
     environment:
       name: ${{ inputs.environment }}
