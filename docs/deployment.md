@@ -54,12 +54,14 @@ workflow `deploy.yml`, which runs:
    database cluster, snapshot classes, no orphan restore point, cap of the review apps),
    then `helm upgrade --install`, then a smoke test through the Gateway. The chart's
    hooks stop Odoo, take a restore point, update the modules and validate the point. An
-   image that is already deployed is left as it is.
+   image that is already deployed is left as it is. The pods carry the version of the
+   image in the label `app.kubernetes.io/version`.
 2. **`restore`** (`ci/deploy-restore.sh`), persistent environments only, when `deploy`
    failed: restores the pending restore point into a new database cluster, switches the
    stable Service to it, and rolls the release back. Odoo is back on the previous image
-   with the data it had when it was stopped. There is nothing to do when the release is
-   still deployed (the failure came from the preflight or the smoke test).
+   with the data it had when it was stopped. There is nothing to do without release or
+   when the release is still deployed (the failure came from the preflight or the smoke
+   test).
 
 One deployment runs at a time per environment (per pull request for review apps); a
 newer run waits, and only the newest waiting run is kept. The job summary shows the URL,
@@ -91,6 +93,13 @@ are listed in the
    GHCR needs a classic personal access token with `read:packages` (fine-grained tokens
    are not accepted), owned by a machine account that can read the packages; plan its
    rotation.
+
+   ```sh
+   kubectl -n <namespace> create secret docker-registry ghcr --docker-server=ghcr.io \
+     --docker-username=<account> --docker-password=<token> \
+     --dry-run=client -o yaml | kubectl apply -f -
+   ```
+
 4. **CI access** in every namespace: a ServiceAccount limited to it, and its kubeconfig.
 
    ```sh
@@ -172,6 +181,6 @@ version. The next deployment of each environment applies it.
 | Credential                                | Rotation                                                                                                                 |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | CI access (`KUBECONFIG`)                  | delete the Secret `odoo-deploy-token`, apply `ci-access.yaml` again, run `ci-kubeconfig.sh` and update the GitHub secret |
-| Registry token                            | run `registry-secret.sh` again in every namespace                                                                        |
+| Registry token                            | run the `kubectl create secret docker-registry` command again in every namespace                                         |
 | Application Secret                        | update the Secret, then `kubectl rollout restart deployment/odoo`                                                        |
 | Database password (`odoo-db-credentials`) | update the Secret: CloudNativePG updates the password of the declared role; then restart Odoo                            |
