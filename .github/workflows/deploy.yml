@@ -24,6 +24,11 @@ on:
         description: Digest of the image (sha256:...)
         type: string
         required: true
+      version:
+        description:
+          Version of the image, shown on the pods (label app.kubernetes.io/version)
+        type: string
+        default: ""
       pr-number:
         description: Pull request of a review app
         type: string
@@ -52,6 +57,7 @@ jobs:
         env:
           ENVIRONMENT: ${{ inputs.environment }}
           DIGEST: ${{ inputs.digest }}
+          VERSION: ${{ inputs.version }}
           PR_NUMBER: ${{ inputs.pr-number }}
           REPOSITORY: ${{ github.repository }}
           REVIEW_MAX_APPS: ${{ vars.REVIEW_MAX_APPS }}

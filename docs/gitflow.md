@@ -23,8 +23,10 @@ Recommended for a real project. Each branch maps to an environment, and the CI
   preprod, the mirror of production. The last rc is promoted to production when `vX.Y.Z`
   is tagged, without a rebuild.
 - **The tag must carry exactly the code of the last rc.** Otherwise the promotion is
-  refused (check of the `odoo.template.tree` label). The merge method (merge commit,
-  squash) does not matter: only the content counts.
+  refused (check of the `odoo.template.tree` label).
+- **Releases, hotfixes and back-merges are merged with a merge commit**: a rebase or a
+  squash rewrites their commits, and the next back-merge or release conflicts. Disable
+  _Allow rebase merging_ in the repository settings.
 - `main` and `develop` only receive pull requests, with a green CI (protection below).
 - After a release or a hotfix: **back-merge** into `develop` (or into the release in
   progress, see case 2).
@@ -132,11 +134,10 @@ maintainer must take it over in a branch of the repository.
 
 One long-lived branch per Odoo version and per deployment method, without Git Flow:
 
-| Branch                   | Content                                       |
-| ------------------------ | --------------------------------------------- |
-| `20.0`, `19.0`, …        | development environment, CI, production image |
-| `20.0-docker-deployment` | `20.0` + Docker deployment (planned)          |
-| `20.0-k8s-deployment`    | `20.0` + Kubernetes deployment (planned)      |
+| Branch                   | Content                                                              |
+| ------------------------ | -------------------------------------------------------------------- |
+| `20.0`, `19.0`, …        | development environment, CI, production image, Kubernetes deployment |
+| `20.0-docker-deployment` | `20.0` + Docker deployment (planned)                                 |
 
 Changes go through a work branch and a pull request to the version branch (CI: quality,
 image, tests). A change to `20.0` is then merged into its deployment branches.
