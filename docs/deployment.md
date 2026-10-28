@@ -55,7 +55,9 @@ workflow `deploy.yml`, which runs:
    then `helm upgrade --install`, then a smoke test through the Gateway. The chart's
    hooks stop Odoo, take a restore point, update the modules and validate the point. An
    image that is already deployed is left as it is. The pods carry the version of the
-   image in the label `app.kubernetes.io/version`.
+   image in the label `app.kubernetes.io/version`. The earlier entries of the
+   environment in the repository's _Deployments_ become inactive and stay in the
+   history.
 2. **`restore`** (`ci/deploy-restore.sh`), persistent environments only, when `deploy`
    failed: restores the pending restore point into a new database cluster, switches the
    stable Service to it, and rolls the release back. Odoo is back on the previous image

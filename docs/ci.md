@@ -140,25 +140,26 @@ low.
 
 Each job is a thin layer over these scripts, which run the same way locally:
 
-| Script                          | Role                                                                           |
-| ------------------------------- | ------------------------------------------------------------------------------ |
-| `ci/base-key.sh`                | Key of the base image                                                          |
-| `ci/base-ensure.sh`             | Publishes `base:<key>` when missing                                            |
-| `ci/image-build.sh`             | `prod` and `test` images on the base (`PUSH=true`); `BASE=local`: build it all |
-| `ci/run-tests.sh <image>`       | Tests + coverage; fails on a failing test or an ERROR/CRITICAL line            |
-| `ci/smoke.sh <image>`           | Hardened smoke test                                                            |
-| `ci/image-tag.sh SRC DEST…`     | Adds tags (same digest), possibly in another package                           |
-| `ci/image-promote.sh X.Y.Z`     | Last rc → `X.Y.Z`, with the content check                                      |
-| `ci/registry-tags.py IMAGE`     | Lists the tags of an image repository (OCI API)                                |
-| `ci/ghcr-prune.sh PACKAGE RULE` | Cleans up a GHCR package (`tag:<tag>` or `keep:<n>[:<regex>]`)                 |
-| `ci/odoo-image-latest.sh`       | New digest of the official Odoo image, if any                                  |
-| `ci/values-lint.sh`             | Deployment values against the pinned chart, modules against `addons/`          |
-| `ci/chart-e2e.sh`               | Deployment scenarios on kind (local, not in CI)                                |
-| `ci/deploy.sh`                  | Deploys an image to an environment                                             |
-| `ci/deploy-restore.sh`          | Restores after a failed update                                                 |
-| `ci/review-remove.sh`           | Removes the review app of a pull request                                       |
-| `ci/review-sweep.sh`            | Removes the review apps of closed pull requests                                |
-| `ci/review-deployments.sh N`    | Deletes the GitHub deployments of a removed review app                         |
+| Script                           | Role                                                                           |
+| -------------------------------- | ------------------------------------------------------------------------------ |
+| `ci/base-key.sh`                 | Key of the base image                                                          |
+| `ci/base-ensure.sh`              | Publishes `base:<key>` when missing                                            |
+| `ci/image-build.sh`              | `prod` and `test` images on the base (`PUSH=true`); `BASE=local`: build it all |
+| `ci/run-tests.sh <image>`        | Tests + coverage; fails on a failing test or an ERROR/CRITICAL line            |
+| `ci/smoke.sh <image>`            | Hardened smoke test                                                            |
+| `ci/image-tag.sh SRC DEST…`      | Adds tags (same digest), possibly in another package                           |
+| `ci/image-promote.sh X.Y.Z`      | Last rc → `X.Y.Z`, with the content check                                      |
+| `ci/registry-tags.py IMAGE`      | Lists the tags of an image repository (OCI API)                                |
+| `ci/ghcr-prune.sh PACKAGE RULE`  | Cleans up a GHCR package (`tag:<tag>` or `keep:<n>[:<regex>]`)                 |
+| `ci/odoo-image-latest.sh`        | New digest of the official Odoo image, if any                                  |
+| `ci/values-lint.sh`              | Deployment values against the pinned chart, modules against `addons/`          |
+| `ci/chart-e2e.sh`                | Deployment scenarios on kind (local, not in CI)                                |
+| `ci/deploy.sh`                   | Deploys an image to an environment                                             |
+| `ci/deploy-restore.sh`           | Restores after a failed update                                                 |
+| `ci/review-remove.sh`            | Removes the review app of a pull request                                       |
+| `ci/review-sweep.sh`             | Removes the review apps of closed pull requests                                |
+| `ci/review-deployments.sh N`     | Deletes the GitHub deployments of a removed review app                         |
+| `ci/deployments-inactive.sh ENV` | Marks the earlier GitHub deployments of an environment inactive                |
 
 ```sh
 # Locally, with a throwaway registry:
