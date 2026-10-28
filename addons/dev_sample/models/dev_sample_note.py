@@ -9,9 +9,12 @@ class DevSampleNote(models.Model):
     name = fields.Char(required=True)
     description = fields.Text()
     deadline = fields.Date()
-    done = fields.Boolean()
+    done = fields.Boolean(copy=False)
     is_late = fields.Boolean(compute="_compute_is_late")
     priority = fields.Selection([("0", "Normal"), ("1", "High")], default="0")
+    user_id = fields.Many2one(
+        "res.users", string="Assigned to", default=lambda self: self.env.user
+    )
 
     @api.depends("deadline", "done")
     def _compute_is_late(self):
