@@ -1,7 +1,7 @@
 {
     "name": "Dev Sample",
     "summary": "Sample module to check the development environment",
-    "version": "20.0.1.1.0",
+    "version": "20.0.1.2.0",
     "category": "Hidden",
     "website": "https://haroldd.dev",
     "author": "Haroldd",

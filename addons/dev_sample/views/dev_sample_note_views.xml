@@ -9,6 +9,7 @@
                 <field name="deadline" />
                 <field name="done" />
                 <field name="priority" />
+                <field name="user_id" />
                 <field name="is_late" column_invisible="True" />
             </list>
         </field>
@@ -34,6 +35,7 @@
                         <field name="deadline" />
                         <field name="done" />
                         <field name="priority" />
+                        <field name="user_id" />
                         <field name="description" />
                     </group>
                 </sheet>
