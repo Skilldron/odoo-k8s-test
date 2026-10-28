@@ -117,12 +117,14 @@ the operations are in [deployment.md](deployment.md).
 
 - When a pull request closes, the version tagged `builds:pr-<n>` is deleted, and its
   review app (`ci/review-remove.sh`, after a running deployment of the same pull
-  request).
+  request) with its GitHub deployments (`ci/review-deployments.sh`).
 - Every night: in `builds`, untagged versions and everything beyond the 30 most recent
   are deleted, except `develop`, `main`, `20.0` and the `pr-<n>` previews (deleted when
   their pull request closes); in `base`, the last 5 are kept.
-- Every night, the review apps left over from closed pull requests are removed
-  (`ci/review-sweep.sh`).
+- Every night, the review apps left over from closed pull requests are removed, with
+  their deployments (`ci/review-sweep.sh`).
+- The jobs that remove review apps read the secret of the environment `review` without
+  being recorded as deployments (`deployment: false`).
 - The release package is **never** cleaned up automatically.
 
 Images are published without attestations (`--provenance=false`): each image is a single
@@ -156,6 +158,7 @@ Each job is a thin layer over these scripts, which run the same way locally:
 | `ci/deploy-restore.sh`          | Restores after a failed update                                                 |
 | `ci/review-remove.sh`           | Removes the review app of a pull request                                       |
 | `ci/review-sweep.sh`            | Removes the review apps of closed pull requests                                |
+| `ci/review-deployments.sh N`    | Deletes the GitHub deployments of a removed review app                         |
 
 ```sh
 # Locally, with a throwaway registry:

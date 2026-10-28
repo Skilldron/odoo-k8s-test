@@ -68,8 +68,8 @@ newer run waits, and only the newest waiting run is kept. The job summary shows 
 the restore points, and the logs of a failed hook Job. A cancelled run does not restore:
 the next run finds the interrupted release, fails, and its `restore` job restores.
 
-Review apps are removed when their pull request closes, and a nightly sweep removes
-those missed (`cleanup.yml`).
+Review apps are removed when their pull request closes, with their entries in the
+repository's _Deployments_, and a nightly sweep removes those missed (`cleanup.yml`).
 
 ## Setup
 

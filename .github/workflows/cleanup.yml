@@ -2,7 +2,9 @@
 # release package (x.y.z-rc.N, x.y.z) is never pruned. Prerequisite: in the settings of
 # each package, give this repository Actions access with the Admin role (deleting
 # versions). Review apps (when DEPLOY_ENVIRONMENTS contains review, see ci.yml): removed
-# when their pull request closes, and a nightly sweep removes those missed.
+# when their pull request closes, with their GitHub deployments, and a nightly sweep
+# removes those missed. These jobs use the secret of the environment review without
+# being deployments themselves (deployment: false).
 name: Cleanup
 
 on:
@@ -69,7 +71,11 @@ jobs:
       github.repository
     runs-on: [self-hosted, lan]
     timeout-minutes: 15
-    environment: review
+    environment: {name: review, deployment: false}
+    permissions:
+      contents: read
+      deployments: write
+      pull-requests: read
     concurrency:
       group: deploy-review-pr-${{ github.event.number }}
       cancel-in-progress: false
@@ -84,6 +90,11 @@ jobs:
         env:
           PR_NUMBER: ${{ github.event.number }}
         run: ci/review-remove.sh "$PR_NUMBER"
+      - name: ci/review-deployments.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: ci/review-deployments.sh "$PR_NUMBER"
 
   sweep:
     # Review apps of pull requests no longer open, missed by the review job
@@ -92,9 +103,10 @@ jobs:
       'pull_request'
     runs-on: [self-hosted, lan]
     timeout-minutes: 30
-    environment: review
+    environment: {name: review, deployment: false}
     permissions:
       contents: read
+      deployments: write
       pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
