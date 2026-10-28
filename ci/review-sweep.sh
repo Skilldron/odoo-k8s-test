@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Nightly sweep of the review apps: removes those of the pull requests that are no longer
-# open (closed or merged), missed by the cleanup job.
+# open (closed or merged), missed by the cleanup job, and their GitHub deployments.
 # Only the releases pr-<n> of the namespace are considered.
 # Usage: ci/review-sweep.sh
 # Env: NAMESPACE (default: namespace of the kubeconfig context), GH_TOKEN and
 #      GITHUB_REPOSITORY (GitHub API), DRY_RUN=true (print only),
-#      PR_STATES_FILE (lines "<number> <open|closed>" instead of the API, tests)
+#      PR_STATES_FILE (lines "<number> <open|closed>" instead of the API, tests: the
+#      GitHub deployments are left alone)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -37,6 +38,7 @@ for release in $(helm list -n "$namespace" -q --filter '^pr-[0-9]+$'); do
     fi
     echo "review-sweep: $release, pull request $state"
     NAMESPACE="$namespace" ci/review-remove.sh "$number"
+    [ -n "${PR_STATES_FILE:-}" ] || ci/review-deployments.sh "$number"
     removed=$((removed + 1))
 done
 echo "review-sweep: $removed review app(s) removed${DRY_RUN:+ (dry run)}"

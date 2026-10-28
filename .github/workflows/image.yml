@@ -47,9 +47,12 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_NUMBER: ${{ github.run_number }}
           SHA: ${{ github.sha }}
+          # Last commit of the pull request, rather than its merge commit (github.sha):
+          # the version shown on a review app is the one of the branch
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           image="ghcr.io/${REPOSITORY,,}"
-          version="${SHA::7}"
+          version="${HEAD_SHA::7}"
           case "$EVENT:$REF_NAME" in
               pull_request:*)
                   refs="$image/builds:pr-$PR_NUMBER" ;;

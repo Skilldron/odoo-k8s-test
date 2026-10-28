@@ -60,6 +60,10 @@ jobs:
       group: deploy-review-pr-${{ github.event.number }}
       cancel-in-progress: false
     uses: ./.github/workflows/deploy.yml
+    # deployments: write for deploy.yml (earlier deployments marked inactive)
+    permissions:
+      contents: read
+      deployments: write
     # The secret KUBECONFIG of the job's environment, in deploy.yml
     secrets: inherit
     with:
@@ -78,6 +82,10 @@ jobs:
       group: deploy-staging
       cancel-in-progress: false
     uses: ./.github/workflows/deploy.yml
+    # deployments: write for deploy.yml (earlier deployments marked inactive)
+    permissions:
+      contents: read
+      deployments: write
     # The secret KUBECONFIG of the job's environment, in deploy.yml
     secrets: inherit
     with:
@@ -92,6 +100,10 @@ jobs:
       group: deploy-production
       cancel-in-progress: false
     uses: ./.github/workflows/deploy.yml
+    # deployments: write for deploy.yml (earlier deployments marked inactive)
+    permissions:
+      contents: read
+      deployments: write
     # The secret KUBECONFIG of the job's environment, in deploy.yml
     secrets: inherit
     with:
@@ -112,6 +124,10 @@ jobs:
       group: deploy-preprod
       cancel-in-progress: false
     uses: ./.github/workflows/deploy.yml
+    # deployments: write for deploy.yml (earlier deployments marked inactive)
+    permissions:
+      contents: read
+      deployments: write
     # The secret KUBECONFIG of the job's environment, in deploy.yml
     secrets: inherit
     with:
