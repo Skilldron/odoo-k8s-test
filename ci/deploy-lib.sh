@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Helpers of ci/deploy.sh and ci/deploy-restore.sh (sourced). Globals set by the caller:
 # env (name of the environment), release, namespace, work (temporary directory),
-# repository and digest (the image, ci/deploy.sh). Env: EXTRA_VALUES, a values file added after those of the
+# repository, digest and version (the image, ci/deploy.sh). Env: EXTRA_VALUES, a values file added after those of the
 # environment (tests); CHART, a local chart directory instead of the version of
 # deploy/chart.env.
 # shellcheck disable=SC2154 # those globals
@@ -44,11 +44,14 @@ pull_chart() { # the pinned chart, pulled once into $work: helm install and upgr
 }
 
 helm_odoo() { # helm_odoo [helm args...]: the chart with the values of the environment and
-    # the image
+    # the image; its version as tag (label app.kubernetes.io/version), the digest decides
     pull_chart
     local extra=()
     if [ -n "${EXTRA_VALUES:-}" ]; then
         extra=(-f "$EXTRA_VALUES")
+    fi
+    if [ -n "${version:-}" ]; then
+        extra+=(--set image.tag="$version")
     fi
     helm upgrade --install "$release" "${chart[@]}" -n "$namespace" \
         -f deploy/values.yaml -f "deploy/values/$env.yaml" ${extra[@]+"${extra[@]}"} \

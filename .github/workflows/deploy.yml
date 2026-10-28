@@ -1,7 +1,8 @@
 # Deployment group (called by ci.yml): one image, by digest, into one environment with the
 # Odoo Helm chart of deploy/chart.env. The chart's hooks carry the update
 # (stop, restore point, migrate, validate); the jobs only run ci/*.sh:
-#   deploy    ci/deploy.sh: preflight, helm upgrade --install, smoke test
+#   deploy    ci/deploy.sh: preflight, helm upgrade --install, smoke test; then, for a
+#             persistent environment, the earlier GitHub deployments marked inactive
 #   restore   ci/deploy-restore.sh, persistent environments, only when deploy failed:
 #             restores the pending restore point into a new CNPG cluster, then helm
 #             rollback (nothing to do when the release is still deployed)
@@ -24,6 +25,11 @@ on:
         description: Digest of the image (sha256:...)
         type: string
         required: true
+      version:
+        description:
+          Version of the image, shown on the pods (label app.kubernetes.io/version)
+        type: string
+        default: ""
       pr-number:
         description: Pull request of a review app
         type: string
@@ -37,6 +43,9 @@ jobs:
     runs-on: [self-hosted, lan]
     # helm --timeout is 60m (DEPLOY_TIMEOUT), plus preflight and smoke test
     timeout-minutes: 75
+    permissions:
+      contents: read
+      deployments: write
     environment:
       name: ${{ inputs.environment }}
       url: ${{ steps.deploy.outputs.url }}
@@ -52,6 +61,7 @@ jobs:
         env:
           ENVIRONMENT: ${{ inputs.environment }}
           DIGEST: ${{ inputs.digest }}
+          VERSION: ${{ inputs.version }}
           PR_NUMBER: ${{ inputs.pr-number }}
           REPOSITORY: ${{ github.repository }}
           REVIEW_MAX_APPS: ${{ vars.REVIEW_MAX_APPS }}
@@ -60,6 +70,16 @@ jobs:
           image="ghcr.io/${REPOSITORY,,}"
           [ "$ENVIRONMENT" != review ] || image="$image/builds"
           ci/deploy.sh "$ENVIRONMENT" "$image@$DIGEST"
+      - name: ci/deployments-inactive.sh
+        # Persistent environments: the earlier deployments become inactive, kept in the
+        # history (those of review apps are deleted with them, cleanup.yml). Not a
+        # failure of the deployment, which would start the restore job.
+        if: inputs.pr-number == ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: ci/deployments-inactive.sh "$ENVIRONMENT"
 
   restore:
     needs: deploy
