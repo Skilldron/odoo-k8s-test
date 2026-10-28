@@ -14,7 +14,8 @@
 # ci/deploy-restore.sh. An image that is already deployed is left as it is.
 # Usage: ci/deploy.sh ENV IMAGE@DIGEST
 #   ENV   name of the environment, values in deploy/values/<ENV>.yaml
-# Env: PR_NUMBER (review app pr-<n>, ephemeral values), NAMESPACE (default: namespace of the kubeconfig context),
+# Env: VERSION (version of the image, shown as the label app.kubernetes.io/version),
+#      PR_NUMBER (review app pr-<n>, ephemeral values), NAMESPACE (default: namespace of the kubeconfig context),
 #      REVIEW_MAX_APPS (5), DEPLOY_TIMEOUT (helm --timeout, 60m), SMOKE (https, or none
 #      without Gateway), EXTRA_VALUES (tests)
 set -euo pipefail
@@ -34,6 +35,8 @@ repository="${ref%@*}"
 digest="${ref#*@}"
 short="${digest#sha256:}"
 short="${short:0:12}"
+version="${VERSION:-}"
+[[ -z "$version" || "$version" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || fail "invalid version: $version"
 namespace="${NAMESPACE:-$(namespace_of_context)}"
 [ -n "$namespace" ] || fail "no namespace: set NAMESPACE or the namespace of the kubeconfig context"
 # A review app (ephemeral=true in the values) is the release pr-<n> of a pull request
@@ -51,7 +54,7 @@ trap 'rm -rf "$work"' EXIT
     echo "### Deployment $env"
     echo
     echo "- release \`$release\`, namespace \`$namespace\`"
-    echo "- image \`$ref\`"
+    echo "- image \`$ref\`${version:+, version \`$version\`}"
 } | ci_summary
 
 log "Release $release in $namespace"

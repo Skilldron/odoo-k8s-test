@@ -47,13 +47,14 @@ jobs:
       packages: write
 
   review:
-    # Internal pull request, not a draft, not a release or hotfix (deployed to staging or preprod)
+    # Internal pull request, not a draft, not a release or hotfix (deployed to staging or
+    # preprod), not a back-merge of main
     if: >-
       contains(vars.DEPLOY_ENVIRONMENTS, 'review') && github.event_name ==
       'pull_request' && github.event.pull_request.head.repo.full_name ==
       github.repository && !github.event.pull_request.draft &&
       !startsWith(github.head_ref, 'release/') && !startsWith(github.head_ref,
-      'hotfix/') && needs.image.outputs.digest != ''
+      'hotfix/') && github.head_ref != 'main' && needs.image.outputs.digest != ''
     needs: image
     concurrency:
       group: deploy-review-pr-${{ github.event.number }}
@@ -64,6 +65,7 @@ jobs:
     with:
       environment: review
       digest: ${{ needs.image.outputs.digest }}
+      version: ${{ needs.image.outputs.version }}
       pr-number: ${{ github.event.number }}
 
   staging:
@@ -81,6 +83,7 @@ jobs:
     with:
       environment: staging
       digest: ${{ needs.image.outputs.digest }}
+      version: ${{ needs.image.outputs.version }}
 
   production:
     if: contains(vars.DEPLOY_ENVIRONMENTS, 'production') && github.ref_type == 'tag'
@@ -94,6 +97,7 @@ jobs:
     with:
       environment: production
       digest: ${{ needs.promote.outputs.digest }}
+      version: ${{ needs.promote.outputs.version }}
 
   preprod:
     # Mirror of the production: the release candidates of a hotfix (it goes straight to
@@ -113,3 +117,4 @@ jobs:
     with:
       environment: preprod
       digest: ${{ needs.promote.outputs.digest || needs.image.outputs.digest }}
+      version: ${{ needs.promote.outputs.version || needs.image.outputs.version }}

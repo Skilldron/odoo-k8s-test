@@ -7,7 +7,8 @@
 #     Service switched to it, the point labelled restored, then helm rollback to the
 #     revision before the point (old image, Odoo restarted);
 #   - no such point: the database was not touched, helm rollback only, or nothing at all
-#     when the release is deployed (deploy job failed in its preflight or smoke test);
+#     without release or when the release is deployed (deploy job failed in its
+#     preflight or smoke test);
 #   - the update was applied and Odoo serves it (only the validation failed): nothing is
 #     restored, the point has to be validated by hand.
 # The previous cluster is never deleted (analysis, then the administrator uninstalls it).
@@ -32,8 +33,13 @@ namespace="${NAMESPACE:-$(namespace_of_context)}"
 release=odoo
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-helm get values "$release" -n "$namespace" -a -o json >"$work/values.json" 2>/dev/null ||
-    fail "no release $release in $namespace"
+if ! helm get values "$release" -n "$namespace" -a -o json >"$work/values.json" 2>/dev/null; then
+    [ -z "$point" ] || fail "no release $release in $namespace"
+    # The deploy job failed before the first installation (preflight): nothing was created
+    echo "**Nothing to restore**: no release \`$release\` in \`$namespace\`." | ci_summary
+    echo "deploy-restore: no release $release in $namespace: nothing to restore"
+    exit 0
+fi
 [ "$(value .ephemeral)" != true ] || fail "$env is ephemeral: no restore point"
 prefix="$(value .labelPrefix)"
 service="$(value .database.external.host | cut -d. -f1)"
