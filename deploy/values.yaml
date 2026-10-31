@@ -22,7 +22,8 @@ odoo:
   # OpenTelemetry: traces and logs to the EDOT gateway of the cluster (OTLP HTTP),
   # authenticated by the token of the Secret otlp (key token) of each namespace, optional:
   # without it Odoo runs and the gateway refuses the export. Each environment sets
-  # deployment.environment.name
+  # deployment.environment.name, and service.version to the version of the image
+  # (ODOO_IMAGE_TAG, set by the chart from the image tag of the deployment)
   env:
     OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-gateway.observability.svc:4318
     OTEL_EXPORTER_OTLP_HEADERS: Authorization=Bearer%20$(OTLP_TOKEN)

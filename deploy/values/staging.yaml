@@ -13,7 +13,7 @@ odoo:
       workers: 0
       max_cron_threads: 1
   env:
-    OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=staging
+    OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=staging,service.version=$(ODOO_IMAGE_TAG)
   persistence:
     # Longhorn: the default class local-path has no snapshots
     storageClass: longhorn
