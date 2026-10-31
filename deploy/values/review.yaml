@@ -10,8 +10,9 @@ odoo:
     options:
       workers: 0
       max_cron_threads: 1
+  # No telemetry for the review apps: no Secret otlp in their namespace
   env:
-    OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=review,service.version=$(ODOO_IMAGE_TAG)
+    OTEL_SDK_DISABLED: "true"
   persistence:
     size: 1Gi
   # Little traffic: one threaded process
