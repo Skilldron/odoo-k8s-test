@@ -38,8 +38,18 @@ jobs:
           tag="${IMAGE#odoo:}"
           tag="${tag%%@*}"
           branch="bot/odoo-image-$tag"
+          pr_create() {
+              gh pr create --base "$BASE" --head "$branch" --title "Odoo image: $tag" \
+                  --body "New official image \`$IMAGE\` (ci/odoo-image-latest.sh). Check the CI before merging."
+          }
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-              echo "$branch already exists."
+              # A failed pull request creation leaves the branch without a pull request:
+              # open it now (a closed pull request is not reopened)
+              if [ -n "$(gh pr list --head "$branch" --state all --json number --jq '.[]')" ]; then
+                  echo "$branch already has a pull request."
+              else
+                  pr_create
+              fi
               exit 0
           fi
           sed -i "s|^ARG ODOO_IMAGE=.*|ARG ODOO_IMAGE=$IMAGE|" docker/Dockerfile
@@ -48,5 +58,4 @@ jobs:
           git switch -c "$branch"
           git commit -am "Odoo image: $tag"
           git push origin "$branch"
-          gh pr create --base "$BASE" --head "$branch" --title "Odoo image: $tag" \
-              --body "New official image \`$IMAGE\` (ci/odoo-image-latest.sh). Check the CI before merging."
+          pr_create

@@ -15,7 +15,7 @@ on:
     # ready_for_review: a draft pull request gets its review app when it leaves draft
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-    branches: [main, develop, "release/**", "hotfix/**", "*.0"]
+    branches: [main, develop, "release/**", "hotfix/**", "*.0", "*.0-*"]
     tags: ["v*"]
   workflow_dispatch:
 
