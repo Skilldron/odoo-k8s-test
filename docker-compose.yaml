@@ -11,6 +11,12 @@ services:
       dockerfile: docker/Dockerfile
       target: dev
     image: ${COMPOSE_PROJECT_NAME:-odoo}-dev:20.0
+    # Local variables of the developer, not in git (.gitignore): OpenTelemetry endpoint
+    # and token, ODOO_<OPTION> overrides of docker/odoo.dev.conf... Rebuild the container
+    # after a change.
+    env_file:
+      - path: .env
+        required: false
     # The developer starts Odoo (F5 / VS Code tasks), not the container
     command: sleep infinity
     volumes:
