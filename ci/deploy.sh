@@ -104,7 +104,7 @@ for secret in $(value '.image.pullSecrets[]?'); do
 done
 while read -r secret key; do
     require_keys "$secret" "$key"
-done < <(jq -r '.secrets.env[]? | "\(.secret) \(.key)"' "$work/values.json")
+done < <(jq -r '.secrets.env[]? | select(.optional != true) | "\(.secret) \(.key)"' "$work/values.json")
 if [ "$(value .odoo.persistence.enabled)" = true ] && [ -z "$(value .odoo.persistence.existingClaim)" ]; then
     for class in $(value .odoo.persistence.storageClass); do
         cluster_object storageclasses.storage.k8s.io "$class"

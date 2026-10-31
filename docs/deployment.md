@@ -105,7 +105,20 @@ are listed in the
      --dry-run=client -o yaml | kubectl apply -f -
    ```
 
-4. **CI access** in every namespace: a ServiceAccount limited to it, and its kubeconfig.
+4. **OpenTelemetry Secret** in the namespaces of staging, preprod and production: the
+   token of the collector, key `token` of the Secret `otlp`, read by `secrets.env` of
+   `deploy/values.yaml`. Odoo exports its traces and logs (module
+   `monitoring_opentelemetry`, loaded server-wide) to the gateway set in `odoo.env`. The
+   Secret is optional: without it, Odoo runs and the gateway refuses its telemetry. The
+   review apps send nothing (`OTEL_SDK_DISABLED` in `deploy/values/review.yaml`): no
+   Secret in the review namespace, whose Secrets any branch can read (step 6).
+
+   ```sh
+   kubectl -n <namespace> create secret generic otlp --from-literal=token=<token> \
+     --dry-run=client -o yaml | kubectl apply -f -
+   ```
+
+5. **CI access** in every namespace: a ServiceAccount limited to it, and its kubeconfig.
 
    ```sh
    kubectl -n acme-prod apply -f deploy/examples/ci-access.yaml
@@ -118,7 +131,7 @@ are listed in the
    ClusterRole at the end of `ci-access.yaml` lets the preflight check the storage and
    snapshot classes; without it, those checks are skipped.
 
-5. **GitHub environments** `review`, `staging`, `preprod` and `production`, each with
+6. **GitHub environments** `review`, `staging`, `preprod` and `production`, each with
    the secret `KUBECONFIG` (`gh secret set KUBECONFIG --env production < kubeconfig`,
    then delete the file: it holds the token). Protect them: the code of any branch
    allowed to deploy to an environment can read its secret.
@@ -132,9 +145,9 @@ are listed in the
    Required reviewers on `production` also hold its `restore` job: Odoo stays stopped
    until someone approves.
 
-6. **Values**: set the hosts, the Gateway and the storage classes in
+7. **Values**: set the hosts, the Gateway and the storage classes in
    `deploy/values/<environment>.yaml`.
-7. **Enable** the deployments with the repository variable `DEPLOY_ENVIRONMENTS`,
+8. **Enable** the deployments with the repository variable `DEPLOY_ENVIRONMENTS`,
    listing the environments to deploy, e.g. `review staging preprod production`. Without
    it, no deployment job runs.
 
@@ -187,5 +200,6 @@ version. The next deployment of each environment applies it.
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | CI access (`KUBECONFIG`)                  | delete the Secret `odoo-deploy-token`, apply `ci-access.yaml` again, run `ci-kubeconfig.sh` and update the GitHub secret |
 | Registry token                            | run the `kubectl create secret docker-registry` command again in every namespace                                         |
+| OpenTelemetry token (`otlp`)              | update the Secret in staging, preprod and production, then `kubectl rollout restart deployment/odoo`                     |
 | Application Secret                        | update the Secret, then `kubectl rollout restart deployment/odoo`                                                        |
 | Database password (`odoo-db-credentials`) | update the Secret: CloudNativePG updates the password of the declared role; then restart Odoo                            |
