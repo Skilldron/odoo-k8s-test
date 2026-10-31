@@ -134,10 +134,11 @@ maintainer must take it over in a branch of the repository.
 
 One long-lived branch per Odoo version and per deployment method, without Git Flow:
 
-| Branch                   | Content                                                              |
-| ------------------------ | -------------------------------------------------------------------- |
-| `20.0`, `19.0`, …        | development environment, CI, production image, Kubernetes deployment |
-| `20.0-docker-deployment` | `20.0` + Docker deployment (planned)                                 |
+| Branch                   | Content                                                   |
+| ------------------------ | --------------------------------------------------------- |
+| `20.0`, `19.0`, …        | development environment, CI, production image             |
+| `20.0-K8S-CD`            | `20.0` + continuous deployment to Kubernetes (Helm chart) |
+| `20.0-docker-deployment` | `20.0` + Docker deployment (planned)                      |
 
 Changes go through a work branch and a pull request to the version branch (CI: quality,
 image, tests). A change to `20.0` is then merged into its deployment branches.

@@ -24,5 +24,8 @@ node_modules/
 # IA
 .claude/
 
+# Links to the code of Odoo and of the OCA modules, created by the dev container
+.odoo-src/
+
 # Local clones of OCA repositories installed as editable (pip install -e), see README
 third-party/

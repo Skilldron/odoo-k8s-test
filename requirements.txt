@@ -10,6 +10,11 @@
 # click-odoo-update: on deploy, updates only the addons whose checksum changed
 click-odoo-contrib==1.24
 
+# ------------ Monitoring ------------
+# OpenTelemetry traces and logs, server-wide module (deploy/values.yaml); the commit of
+# https://github.com/Skilldron/odoo-addons (branch 20.0)
+odoo-addon-monitoring_opentelemetry @ git+https://github.com/Skilldron/odoo-addons@70a98eae82e3c85bc54fd5003574204038a5455a#subdirectory=monitoring_opentelemetry
+
 # ------------ OCA modules ------------
 # OCA modules are in odoo.addons namespace and automatically found.
 #
