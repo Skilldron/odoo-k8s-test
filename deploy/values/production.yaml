@@ -21,6 +21,8 @@ odoo:
       smtp_ssl: true
       smtp_user: odoo@example.com
       email_from: odoo@example.com
+  env:
+    OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=production
   persistence:
     # Longhorn: the default class local-path has no snapshots
     storageClass: longhorn

@@ -17,3 +17,17 @@ odoo:
     options:
       # Project addons, then purchased modules (pip addons are found without a path)
       addons_path: [/opt/odoo/addons, /opt/odoo/vendor]
+      # monitoring_opentelemetry is loaded in every process, not installed in the database
+      server_wide_modules: [base, web, monitoring_opentelemetry]
+  # OpenTelemetry: traces and logs to the EDOT gateway of the cluster (OTLP HTTP),
+  # authenticated by the token of the Secret otlp (key token) of each namespace, optional:
+  # without it Odoo runs and the gateway refuses the export. Each environment sets
+  # deployment.environment.name
+  env:
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-gateway.observability.svc:4318
+    OTEL_EXPORTER_OTLP_HEADERS: Authorization=Bearer%20$(OTLP_TOKEN)
+    OTEL_SERVICE_NAME: odootest
+
+secrets:
+  env:
+    - {name: OTLP_TOKEN, secret: otlp, key: token, optional: true}

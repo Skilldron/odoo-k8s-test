@@ -12,6 +12,8 @@ odoo:
       # Little traffic (user acceptance): one threaded process
       workers: 0
       max_cron_threads: 1
+  env:
+    OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=staging
   persistence:
     # Longhorn: the default class local-path has no snapshots
     storageClass: longhorn

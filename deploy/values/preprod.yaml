@@ -16,6 +16,8 @@ odoo:
       max_cron_threads: 1
       limit_memory_soft: 402653184
       limit_memory_hard: 503316480
+  env:
+    OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=preprod
   persistence:
     # Longhorn: the default class local-path has no snapshots
     storageClass: longhorn

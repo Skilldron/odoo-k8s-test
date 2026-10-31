@@ -10,6 +10,8 @@ odoo:
     options:
       workers: 0
       max_cron_threads: 1
+  env:
+    OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=review
   persistence:
     size: 1Gi
   # Little traffic: one threaded process
