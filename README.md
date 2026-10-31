@@ -6,6 +6,12 @@ builds, tests and publishes a hardened production image.
 
 One branch per Odoo version (`20.0`, `19.0`, …), same layout.
 
+> **Branch `20.0-K8S-CD`**: `20.0` plus continuous deployment to Kubernetes (review
+> apps, staging, preproduction, production). It relies on the
+> [Odoo Helm chart](https://github.com/Skilldron/odoo-helm-chart), whose version is
+> pinned in `deploy/chart.env`; see [docs/deployment.md](docs/deployment.md). Changes
+> common to every deployment method go to `20.0` first, then are merged here.
+
 ## Getting started
 
 Requirements: Docker, VS Code and the _Dev Containers_ extension.
@@ -14,17 +20,27 @@ Requirements: Docker, VS Code and the _Dev Containers_ extension.
 2. Run **Odoo: server** (F5) → <http://localhost:8069>, database `odoo20` by default.
 3. Mail sent by Odoo shows up in Mailpit: <http://localhost:8025>.
 
-Without VS Code: `docker compose up -d`, then `docker compose exec odoo odoo -d odoo20`.
+No port is published on the host: VS Code forwards Odoo (8069) and Mailpit (8025), and
+picks another local port when one is taken (another project running), shown in the
+**Ports** view; _Change Local Address Port_ there sets your own. PostgreSQL stays inside
+the project (SQLTools reaches it as `db:5432`). To reach it from a client on the host
+(psql, DBeaver…), either forward it in VS Code (**Ports** view → _Forward a Port_ →
+`db:5432`, for the session), or publish it in `docker-compose.yaml` (service `db`:
+`ports: ["5432:5432"]`, then rebuild the container; fails if the port is taken).
+
+Without VS Code: `docker compose up -d`, then `docker compose exec odoo odoo -d odoo20`
+(add `ports:` to the services to reach in `docker-compose.yaml`).
 
 ## What the environment provides
 
 | Need        | Tool                                                                  |
 | ----------- | --------------------------------------------------------------------- |
 | Image       | `docker/Dockerfile`, based on the official `odoo:20.0` image (pinned) |
-| Services    | `compose.yaml`: Odoo, PostgreSQL 18, Mailpit                          |
+| Services    | `docker-compose.yaml`: Odoo, PostgreSQL 18, Mailpit                   |
 | Odoo LSP    | `Odoo.odoo` extension (OdooLS), configured by `odools.toml`           |
 | Python      | Pylance + ruff (lint, format, import sorting on save)                 |
 | Debugger    | debugpy, configurations in `.vscode/launch.json`                      |
+| Odoo source | `.odoo-src/`: Odoo and OCA code to browse, search, debug              |
 | Odoo lint   | pylint-odoo (`.pylintrc`), `oca-checks-odoo-module`                   |
 | XML / JS    | prettier + `@prettier/plugin-xml`, eslint (`eslint.config.mjs`)       |
 | Git hooks   | pre-commit (`.pre-commit-config.yaml`), the same locally and in CI    |
@@ -34,6 +50,11 @@ Without VS Code: `docker compose up -d`, then `docker compose exec odoo odoo -d 
 
 - **Debug**: F5 → _Odoo: server_, _Odoo: update a module_, _Odoo: test a module_, _Odoo:
   shell_. Odoo runs with `workers = 0` so that breakpoints are reliable.
+- **Odoo and OCA code**: `.odoo-src/` (ignored by git, created with the container) links
+  to the code of the image, read-only: `odoo` (`/usr/lib/python3/dist-packages/odoo`:
+  framework and standard modules) and `oca` (`/opt/venv/odoo-addons`). Browse it, search
+  it (`static/lib` and `.po` files excluded) and set breakpoints there; it always
+  matches the image.
 - **Auto-reload without the debugger**: task _Odoo: run (auto-reload, no debugger)_.
 - **Tests**: task or debug configuration _Odoo: test a module_ (database `odoo20_test`).
 - **Quality**: the hooks run on every commit; `pre-commit run --all-files` checks the
@@ -51,6 +72,7 @@ ci/              CI scripts, runnable locally
 docker/          multi-stage Dockerfile, dev configuration, production configuration
 deploy/          chart version (chart.env), values per environment, CI access example
 docs/            CI and production image, deployment, branching model
+.odoo-src/       links to the code of Odoo and of the OCA modules (dev container, ignored)
 requirements.txt        Python dependencies of the addons, OCA modules
 requirements-dev.txt    developer tooling (dev image only)
 ```
@@ -66,7 +88,7 @@ candidates and versions to the release package. The only promotion turns the las
 `X.Y.Z-rc.N`, once validated, into `X.Y.Z` (same image) when `vX.Y.Z` is tagged. Each
 environment configures the image with environment variables.
 
-This branch then deploys the image to Kubernetes with the
+This branch, `20.0-K8S-CD`, then deploys the image to Kubernetes with the
 [Odoo Helm chart](https://github.com/Skilldron/odoo-helm-chart), pinned in
 `deploy/chart.env`: a review app for each pull request, staging for each release
 candidate, a preproduction mirror and the production. Deployments are enabled per
@@ -109,8 +131,9 @@ Python dependencies of the module, constrained by the apt versions of the image.
 Once the module is on PyPI, replace the `git+…` line with `==version`.
 
 **Fixing or debugging an OCA module**: the code is in the venv
-(`/opt/venv/odoo-addons/<module>`), and breakpoints work there. To change it, clone the
-repository into `third-party/` (ignored by git) and install it as editable:
+(`/opt/venv/odoo-addons/<module>`, linked as `.odoo-src/oca/<module>`), and breakpoints
+work there. To change it, clone the repository into `third-party/` (ignored by git) and
+install it as editable:
 
 ```sh
 git clone -b 20.0 https://github.com/OCA/<repo> third-party/<repo>
@@ -160,8 +183,8 @@ pull request every week (`ci/odoo-image-latest.sh` runs the same check locally).
 ## PostgreSQL
 
 The template uses PostgreSQL 18 (Odoo 20 needs 16 or later), in development
-(`compose.yaml`) and in CI (`ci/lib.sh`, variable `POSTGRES_IMAGE`). The PostgreSQL
-clients of the Odoo image (`pg_dump`, `pg_restore`) are version 18 too.
+(`docker-compose.yaml`) and in CI (`ci/lib.sh`, variable `POSTGRES_IMAGE`). The
+PostgreSQL clients of the Odoo image (`pg_dump`, `pg_restore`) are version 18 too.
 
 Since version 18, the `postgres` image keeps its data in
 `/var/lib/postgresql/<version>/docker`: the `pg-data` volume is mounted on

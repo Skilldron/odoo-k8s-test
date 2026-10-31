@@ -89,7 +89,10 @@ are listed in the
    and once per cluster the `VolumeSnapshotClass` of the restore points, with
    `deletionPolicy: Delete`. The values files expect the Service `odoo-db`, the Secrets
    `odoo-db-credentials` and `odoo-app`, and the class `csi-snapclass`: adapt them to
-   your names.
+   your names. Also install a recurring job that backs the filestore volume up outside
+   the cluster, for example a Longhorn `RecurringJob` of task `backup`: the chart backs
+   up the database only, and after a disaster the filestore comes from that backup
+   ([Recover from a disaster](https://github.com/Skilldron/odoo-helm-chart/blob/main/docs/operations.md#recover-from-a-disaster)).
 3. **Registry Secret** in every namespace, of type `docker-registry`, to pull the
    private images from GHCR, and its name in `image.pullSecrets` of the values files.
    GHCR needs a classic personal access token with `read:packages` (fine-grained tokens

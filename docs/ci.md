@@ -56,20 +56,20 @@ runner with a persistent Docker cache would avoid this download.
 
 ## GHCR packages and tags
 
-| Package                       | Tags                                                                           | Lifetime             |
-| ----------------------------- | ------------------------------------------------------------------------------ | -------------------- |
-| `ghcr.io/<org>/<repo>/base`   | `<key>`                                                                        | last 5 versions      |
-| `ghcr.io/<org>/<repo>/builds` | `run-<id>-<attempt>` (transit), `pr-<n>`, `develop`, `main`, `20.0`, `sha-<7>` | disposable (cleanup) |
-| `ghcr.io/<org>/<repo>`        | `X.Y.Z-rc.N`, `X.Y.Z`                                                          | kept                 |
+| Package                       | Tags                                                                                                | Lifetime             |
+| ----------------------------- | --------------------------------------------------------------------------------------------------- | -------------------- |
+| `ghcr.io/<org>/<repo>/base`   | `<key>`                                                                                             | last 5 versions      |
+| `ghcr.io/<org>/<repo>/builds` | `run-<id>-<attempt>` (transit), `pr-<n>`, `develop`, `main`, `20.0`, `20.0-<deployment>`, `sha-<7>` | disposable (cleanup) |
+| `ghcr.io/<org>/<repo>`        | `X.Y.Z-rc.N`, `X.Y.Z`                                                                               | kept                 |
 
-| Event                | Published tags                      | Intended environment |
-| -------------------- | ----------------------------------- | -------------------- |
-| pull request         | `builds:pr-<n>`                     | review               |
-| push `develop`       | `builds:develop`, `builds:sha-<7>`  | —                    |
-| push `main`, `20.0`  | `builds:<branch>`, `builds:sha-<7>` | —                    |
-| push `release/X.Y.Z` | `X.Y.Z-rc.<run number>`             | staging              |
-| push `hotfix/X.Y.Z`  | `X.Y.Z-rc.<run number>`             | preprod              |
-| tag `vX.Y.Z`         | `X.Y.Z` (promotion of the last rc)  | production           |
+| Event                                    | Published tags                      | Intended environment |
+| ---------------------------------------- | ----------------------------------- | -------------------- |
+| pull request                             | `builds:pr-<n>`                     | review               |
+| push `develop`                           | `builds:develop`, `builds:sha-<7>`  | —                    |
+| push `main`, `20.0`, `20.0-<deployment>` | `builds:<branch>`, `builds:sha-<7>` | —                    |
+| push `release/X.Y.Z`                     | `X.Y.Z-rc.<run number>`             | staging              |
+| push `hotfix/X.Y.Z`                      | `X.Y.Z-rc.<run number>`             | preprod              |
+| tag `vX.Y.Z`                             | `X.Y.Z` (promotion of the last rc)  | production           |
 
 The `N` of `-rc.N` is the CI run number: it always grows, with gaps. To deploy, prefer
 the **digest** (`image@sha256:…`, shown in the job summary) to a moving tag.
@@ -119,8 +119,9 @@ the operations are in [deployment.md](deployment.md).
   review app (`ci/review-remove.sh`, after a running deployment of the same pull
   request) with its GitHub deployments (`ci/review-deployments.sh`).
 - Every night: in `builds`, untagged versions and everything beyond the 30 most recent
-  are deleted, except `develop`, `main`, `20.0` and the `pr-<n>` previews (deleted when
-  their pull request closes); in `base`, the last 5 are kept.
+  are deleted, except `develop`, `main`, `20.0`, the deployment branches
+  `20.0-<deployment>` and the `pr-<n>` previews (deleted when their pull request
+  closes); in `base`, the last 5 are kept.
 - Every night, the review apps left over from closed pull requests are removed, with
   their deployments (`ci/review-sweep.sh`).
 - The jobs that remove review apps read the secret of the environment `review` without

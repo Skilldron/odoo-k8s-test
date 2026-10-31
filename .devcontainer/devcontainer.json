@@ -1,6 +1,6 @@
 {
   "name": "Odoo 20.0 Community",
-  "dockerComposeFile": ["../compose.yaml"],
+  "dockerComposeFile": ["../docker-compose.yaml"],
   "service": "odoo",
   "runServices": ["odoo", "db", "mailpit"],
   "workspaceFolder": "/workspace",
@@ -8,14 +8,16 @@
   "updateRemoteUserUID": true,
   "shutdownAction": "stopCompose",
 
-  "forwardPorts": [8069, 8072, 8025],
+  // docker-compose.yaml publishes no port: VS Code forwards these, on another local port when
+  // one is taken (Ports view: Change Local Address Port). PostgreSQL is not forwarded
+  // (SQLTools reaches db:5432); workers = 0, so the websocket goes through 8069.
+  "forwardPorts": [8069, "mailpit:8025"],
   "portsAttributes": {
     "8069": {"label": "Odoo", "onAutoForward": "notify"},
-    "8072": {"label": "Odoo longpolling", "onAutoForward": "silent"},
-    "8025": {"label": "Mailpit", "onAutoForward": "silent"}
+    "mailpit:8025": {"label": "Mailpit", "onAutoForward": "silent"}
   },
 
-  "postCreateCommand": "git config --global --add safe.directory /workspace && npm ci --no-audit --no-fund && pre-commit install --install-hooks",
+  "postCreateCommand": "git config --global --add safe.directory /workspace && mkdir -p .odoo-src && ln -sfn /usr/lib/python3/dist-packages/odoo .odoo-src/odoo && ln -sfn /opt/venv/odoo-addons .odoo-src/oca && npm ci --no-audit --no-fund && pre-commit install --install-hooks",
 
   "customizations": {
     "vscode": {
@@ -54,6 +56,15 @@
         "[yaml]": {"editor.defaultFormatter": "esbenp.prettier-vscode"},
 
         "files.exclude": {"**/__pycache__": true, "**/*.pyc": true},
+        // .odoo-src: links to the code of Odoo and of the OCA modules (postCreateCommand),
+        // read-only, to browse, search and set breakpoints. Not watched; third-party JS
+        // libraries and translations left out of the search.
+        "files.watcherExclude": {"**/.odoo-src/**": true},
+        "search.exclude": {
+          "**/node_modules": true,
+          "**/.odoo-src/**/static/lib/**": true,
+          "**/.odoo-src/**/i18n/*.po": true
+        },
 
         "sqltools.connections": [
           {
