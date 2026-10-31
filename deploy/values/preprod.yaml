@@ -9,13 +9,11 @@ odoo:
   modules: [dev_sample]
   config:
     options:
-      # Same process model as the production, sized for little traffic. Each process
-      # (workers, cron, websocket) is recycled above limit_memory_soft and killed above
-      # limit_memory_hard: their sum stays under limits.memory.
+      # Same process model as the production, sized for little traffic
       workers: 2
       max_cron_threads: 1
-      limit_memory_soft: 402653184
-      limit_memory_hard: 503316480
+      limit_memory_soft: 805306368
+      limit_memory_hard: 1073741824
   env:
     OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=preprod,service.version=$(ODOO_IMAGE_TAG)
   persistence:

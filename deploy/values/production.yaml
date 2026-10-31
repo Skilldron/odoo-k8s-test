@@ -9,13 +9,11 @@ odoo:
   config:
     options:
       # Sized for a small instance: raise workers with the traffic (about 6 users per
-      # worker, at most CPU x 2 + 1), and limits.memory with them. Each process
-      # (workers, cron, websocket) is recycled above limit_memory_soft and killed above
-      # limit_memory_hard: their sum stays under limits.memory.
+      # worker, at most CPU x 2 + 1), and limits.memory with them.
       workers: 2
       max_cron_threads: 1
-      limit_memory_soft: 402653184
-      limit_memory_hard: 503316480
+      limit_memory_soft: 805306368
+      limit_memory_hard: 1073741824
       smtp_server: smtp.example.com
       smtp_port: 587
       smtp_ssl: true
