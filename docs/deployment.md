@@ -107,7 +107,7 @@ are listed in the
 
 4. **OpenTelemetry Secret** in the namespaces of staging, preprod and production: the
    token of the collector, key `token` of the Secret `otlp`, read by `secrets.env` of
-   `deploy/values.yaml`. Odoo exports its traces and logs (module
+   `deploy/values.yaml`. Odoo exports its traces, metrics and logs (module
    `monitoring_opentelemetry`, loaded server-wide) to the gateway set in `odoo.env`. The
    Secret is optional: without it, Odoo runs and the gateway refuses its telemetry. The
    review apps send nothing (`OTEL_SDK_DISABLED` in `deploy/values/review.yaml`): no
