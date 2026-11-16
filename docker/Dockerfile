@@ -6,7 +6,7 @@
 
 # Update Odoo: change the dated tag and its digest (docker buildx imagetools inspect odoo:20.0)
 
-ARG ODOO_IMAGE=odoo:20.0-20260926@sha256:cdd83e8359b3e8c357895d476396c05021fed9975bf420f353bab25fcaed1533
+ARG ODOO_IMAGE=odoo:20.0-20261112@sha256:8bcae4c1f895683ee851e19dd3e7d999e81e770defe9015bc9dad8bbf10f2b0d
 
 ########################################################################
 FROM ${ODOO_IMAGE} AS runtime
